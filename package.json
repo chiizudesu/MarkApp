@@ -1,0 +1,65 @@
+{
+  "name": "markapp",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "dist": "npm run build && electron-builder"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.57.0",
+    "@chakra-ui/react": "^3.0.0",
+    "@emotion/react": "^11.14.0",
+    "@platejs/autoformat": "^52.3.10",
+    "@platejs/basic-nodes": "^52.3.10",
+    "@platejs/code-block": "^52.3.14",
+    "@platejs/list": "^52.3.10",
+    "@platejs/markdown": "^52.3.10",
+    "@platejs/media": "^52.3.10",
+    "diff-match-patch": "^1.0.5",
+    "electron-store": "^10.0.0",
+    "js-yaml": "^4.1.0",
+    "lucide-react": "^0.513.0",
+    "next-themes": "^0.4.6",
+    "platejs": "^52.3.11",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-icons": "^5.6.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/diff-match-patch": "^1.0.36",
+    "@types/js-yaml": "^4.0.9",
+    "@types/react": "^18.2.55",
+    "@types/react-dom": "^18.2.19",
+    "@vitejs/plugin-react": "^4.2.1",
+    "electron": "^29.1.0",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.2.2",
+    "vite": "^5.1.0",
+    "vite-plugin-electron": "^0.28.0",
+    "vite-plugin-electron-renderer": "^0.14.5"
+  },
+  "build": {
+    "appId": "com.markapp.editor",
+    "productName": "MarkApp",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "templates/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    }
+  }
+}

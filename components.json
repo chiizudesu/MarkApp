@@ -1,0 +1,5 @@
+{
+  "registries": {
+    "@plate": "https://platejs.org/r/{name}.json"
+  }
+}

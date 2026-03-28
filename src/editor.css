@@ -1,0 +1,285 @@
+/* Plate editor theme variables and base styles */
+
+/* Text/page colors; surface “paper” comes from the doc page wrapper in PlateEditor. */
+.markapp-light {
+  --markapp-bg: transparent;
+  --markapp-fg: #1a1a1a;
+  --markapp-muted: #666666;
+  --markapp-border: #e2e2e2;
+  --markapp-accent: #3b82f6;
+  --markapp-code-bg: #f4f4f5;
+  --markapp-selection: rgba(59, 130, 246, 0.15);
+  color: var(--markapp-fg);
+  background: var(--markapp-bg);
+}
+
+.markapp-dark {
+  --markapp-bg: transparent;
+  --markapp-fg: #e4e4e7;
+  --markapp-muted: #a1a1aa;
+  --markapp-border: #3f3f46;
+  --markapp-accent: #60a5fa;
+  --markapp-code-bg: #27272a;
+  --markapp-selection: rgba(96, 165, 250, 0.2);
+  color: var(--markapp-fg);
+  background: var(--markapp-bg);
+}
+
+.markapp-plate-content {
+  caret-color: var(--markapp-accent);
+}
+
+.markapp-plate-content ::selection {
+  background: var(--markapp-selection);
+}
+
+.markapp-plate-content [data-slate-placeholder] {
+  color: var(--markapp-muted);
+  opacity: 0.5;
+}
+
+/* Lists rendered by the indent list plugin */
+.markapp-plate-content ul {
+  list-style-type: disc;
+  padding-left: 1.5em;
+  margin: 0.25em 0;
+}
+
+.markapp-plate-content ol {
+  list-style-type: decimal;
+  padding-left: 1.5em;
+  margin: 0.25em 0;
+}
+
+.markapp-plate-content li {
+  margin: 0.15em 0;
+}
+
+/* Ensure the editor fills its container */
+.markapp-plate-content [data-slate-editor] {
+  min-height: 100%;
+}
+
+/* Scrollable editor canvas: thin track, pill thumb, no arrow buttons (Win/Linux WebKit). */
+.markapp-editor-scroll {
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15, 23, 42, 0.35) transparent;
+}
+
+.markapp-editor-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.markapp-editor-scroll::-webkit-scrollbar-track {
+  background: transparent;
+  margin-block: 6px;
+}
+
+.markapp-editor-scroll::-webkit-scrollbar-thumb {
+  background-color: rgba(15, 23, 42, 0.28);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+.markapp-editor-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(15, 23, 42, 0.45);
+  background-clip: padding-box;
+}
+
+.markapp-editor-scroll::-webkit-scrollbar-button,
+.markapp-editor-scroll::-webkit-scrollbar-corner {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* Dark app chrome: lighter thumb on dim background */
+.markapp-editor-scroll[data-chrome="dark"] {
+  scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
+}
+
+.markapp-editor-scroll[data-chrome="dark"]::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.28);
+}
+
+.markapp-editor-scroll[data-chrome="dark"]::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.45);
+}
+
+/* Markdown rendered via react-markdown (preview + agent chat) */
+.md-prose {
+  color: inherit;
+  max-width: 100%;
+}
+
+.md-prose-chat {
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+.md-prose-chat > *:first-child {
+  margin-top: 0;
+}
+
+.md-prose-chat > *:last-child {
+  margin-bottom: 0;
+}
+
+.md-prose p {
+  margin: 0.5em 0;
+}
+
+.md-prose h1,
+.md-prose h2,
+.md-prose h3,
+.md-prose h4,
+.md-prose h5,
+.md-prose h6 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 0.75em 0 0.35em;
+  color: inherit;
+}
+
+.md-prose h1 {
+  font-size: 1.35em;
+}
+
+.md-prose h2 {
+  font-size: 1.2em;
+}
+
+.md-prose h3 {
+  font-size: 1.08em;
+}
+
+.md-prose ul,
+.md-prose ol {
+  margin: 0.5em 0;
+  padding-left: 1.35em;
+}
+
+.md-prose ul {
+  list-style-type: disc;
+}
+
+.md-prose ol {
+  list-style-type: decimal;
+}
+
+.md-prose li {
+  margin: 0.2em 0;
+}
+
+.md-prose strong {
+  font-weight: 600;
+}
+
+.md-prose em {
+  font-style: italic;
+}
+
+.markapp-light .md-prose code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.88em;
+  padding: 0.12em 0.4em;
+  border-radius: 4px;
+  background: var(--markapp-code-bg);
+}
+
+.markapp-dark .md-prose code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.88em;
+  padding: 0.12em 0.4em;
+  border-radius: 4px;
+  background: var(--markapp-code-bg);
+}
+
+/* Agent chat bubbles (no markapp-* wrapper): neutral code background */
+.md-prose-chat code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.88em;
+  padding: 0.12em 0.4em;
+  border-radius: 4px;
+  background: rgba(128, 128, 128, 0.28);
+}
+
+.md-prose pre {
+  margin: 0.65em 0;
+  padding: 0.75em 1em;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 0.82em;
+  line-height: 1.45;
+}
+
+.markapp-light .md-prose pre {
+  background: var(--markapp-code-bg);
+}
+
+.markapp-dark .md-prose pre {
+  background: var(--markapp-code-bg);
+}
+
+.md-prose pre code {
+  padding: 0;
+  font-size: inherit;
+  background: transparent !important;
+}
+
+.md-prose blockquote {
+  margin: 0.6em 0;
+  padding-left: 0.85em;
+  border-left: 3px solid var(--markapp-border, rgba(128, 128, 128, 0.45));
+  opacity: 0.92;
+}
+
+.md-prose a {
+  color: var(--markapp-accent, #3b82f6);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.md-prose hr {
+  margin: 1em 0;
+  border: none;
+  border-top: 1px solid var(--markapp-border, rgba(128, 128, 128, 0.35));
+}
+
+/* Outline row: inline snippets only */
+.md-prose-outline {
+  display: inline;
+}
+
+.md-prose-outline p,
+.md-prose-outline h1,
+.md-prose-outline h2,
+.md-prose-outline h3,
+.md-prose-outline h4,
+.md-prose-outline h5,
+.md-prose-outline h6 {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+.md-prose-outline strong {
+  font-weight: 600;
+}
+
+.md-prose-outline em {
+  font-style: italic;
+}
+
+.md-prose-outline code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.92em;
+  padding: 0.05em 0.25em;
+  border-radius: 3px;
+  background: rgba(128, 128, 128, 0.2);
+}
