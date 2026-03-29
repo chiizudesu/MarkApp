@@ -11,6 +11,8 @@ export interface ChatMessage {
     sectionTitle?: string;
     /** AI-generated bullet points (≤5) summarising what changed. Populated async after streaming. */
     summary?: string[];
+    /** Whether the user accepted (true), reverted (false), or hasn't decided yet (undefined). */
+    accepted?: boolean;
   };
 }
 

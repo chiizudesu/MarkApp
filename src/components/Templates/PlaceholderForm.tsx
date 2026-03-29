@@ -60,8 +60,11 @@ export function PlaceholderForm(props: {
           <Field.Label fontSize="sm">{`{{${p}}}`}</Field.Label>
           <Input
             size="sm"
+            variant="outline"
             value={values[p] ?? ""}
             onChange={(e) => setValues((v) => ({ ...v, [p]: e.target.value }))}
+            bg={{ _light: "white", _dark: "gray.900" }}
+            borderColor={{ _light: "gray.300", _dark: "gray.500" }}
           />
         </Field.Root>
       ))}
@@ -80,7 +83,15 @@ export function PlaceholderForm(props: {
       ))}
       <Field.Root>
         <Field.Label>AI fill from brief (optional)</Field.Label>
-        <Textarea value={aiBrief} onChange={(e) => setAiBrief(e.target.value)} size="sm" rows={3} />
+        <Textarea
+          value={aiBrief}
+          onChange={(e) => setAiBrief(e.target.value)}
+          size="sm"
+          rows={3}
+          variant="outline"
+          bg={{ _light: "white", _dark: "gray.900" }}
+          borderColor={{ _light: "gray.300", _dark: "gray.500" }}
+        />
         <Button mt={2} size="sm" variant="outline" loading={aiBusy} onClick={() => void aiFill()}>
           Fill with AI
         </Button>

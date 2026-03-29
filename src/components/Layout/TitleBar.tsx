@@ -17,6 +17,17 @@ import {
 const dragStyle: CSSProperties = { WebkitAppRegion: "drag" };
 const noDragStyle: CSSProperties = { WebkitAppRegion: "no-drag" };
 
+/** Same as EditorToolbar font dropdowns — keeps menu layering/anchor behavior consistent. */
+const menuContentStyle = {
+  borderRadius: "lg",
+  boxShadow: "lg",
+  py: 1,
+  minW: "0",
+} as const;
+
+/** Match toolbar: menus open below trigger, trailing edge aligned (LTR). */
+const titleBarMenuPositioning = { placement: "bottom-end" as const };
+
 /** Diagonals read heavier than horizontal 1px lines; sub-1 stroke helps match minimize/maximize weight. */
 function CaptionCloseGlyph() {
   return (
@@ -132,7 +143,7 @@ function WindowControls(props: { maximized: boolean }) {
 
 function TTip({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <Tooltip.Root>
+    <Tooltip.Root openDelay={600}>
       <Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
       <Tooltip.Positioner>
         <Tooltip.Content px={2} py={1} fontSize="xs" maxW="280px">
@@ -175,15 +186,20 @@ export function TitleBar(props: {
   const saveLabel = `Save (${modShortcut("S")})`;
 
   return (
-    <Flex
-      h="32px"
-      align="stretch"
+    <Box
+      flexShrink={0}
+      bg="bg.muted"
       borderBottomWidth="1px"
       borderColor="border.muted"
-      bg="bg.muted"
-      flexShrink={0}
-      overflow="hidden"
     >
+      <Flex
+        h="40px"
+        pt="4px"
+        align="stretch"
+        bg="bg.muted"
+        overflow="visible"
+        style={dragStyle}
+      >
       <Flex
         w="36px"
         flexShrink={0}
@@ -194,9 +210,7 @@ export function TitleBar(props: {
         style={dragStyle}
         userSelect="none"
       >
-        <Text fontSize="xs" fontWeight="bold" color="fg.muted">
-          M
-        </Text>
+        <img src="/icon.png" alt="MarkApp" width={20} height={20} style={{ display: "block", objectFit: "contain" }} />
       </Flex>
 
       <HStack
@@ -208,63 +222,65 @@ export function TitleBar(props: {
         borderColor="border.muted"
         style={noDragStyle}
       >
-        <Menu.Root
-          onOpenChange={(d) => {
-            if (d.open) props.onRefreshRecents();
-          }}
-        >
-          <TTip label={`New document (${modShortcut("N")})`}>
+        <TTip label={`New document (${modShortcut("N")})`}>
+          <Menu.Root
+            positioning={titleBarMenuPositioning}
+            onOpenChange={(d) => {
+              if (d.open) props.onRefreshRecents();
+            }}
+          >
             <Menu.Trigger asChild>
               <IconButton aria-label="New document" size="sm" variant="ghost" css={{ _icon: { boxSize: "4" } }}>
                 <FilePlus size={16} />
               </IconButton>
             </Menu.Trigger>
-          </TTip>
-          <Menu.Positioner>
-            <Menu.Content minW="200px">
-              <Menu.Item value="blank" onSelect={() => props.onNewBlank()}>
-                New blank document
-              </Menu.Item>
-              <Menu.Item value="tpl" onSelect={() => props.onTemplateNew()}>
-                New from template…
-              </Menu.Item>
-            </Menu.Content>
-          </Menu.Positioner>
-        </Menu.Root>
+            <Menu.Positioner>
+              <Menu.Content {...menuContentStyle} minW="200px">
+                <Menu.Item value="blank" onSelect={() => props.onNewBlank()}>
+                  <Text fontSize="sm">New blank document</Text>
+                </Menu.Item>
+                <Menu.Item value="tpl" onSelect={() => props.onTemplateNew()}>
+                  <Text fontSize="sm">New from template…</Text>
+                </Menu.Item>
+              </Menu.Content>
+            </Menu.Positioner>
+          </Menu.Root>
+        </TTip>
 
-        <Menu.Root
-          onOpenChange={(d) => {
-            if (d.open) props.onRefreshRecents();
-          }}
-        >
-          <TTip label={`Open file (${modShortcut("O")}) — Browse or recent`}>
+        <TTip label={`Open file (${modShortcut("O")}) — Browse or recent`}>
+          <Menu.Root
+            positioning={titleBarMenuPositioning}
+            onOpenChange={(d) => {
+              if (d.open) props.onRefreshRecents();
+            }}
+          >
             <Menu.Trigger asChild>
               <IconButton aria-label="Open" size="sm" variant="ghost" css={{ _icon: { boxSize: "4" } }}>
                 <FolderOpen size={16} />
               </IconButton>
             </Menu.Trigger>
-          </TTip>
-          <Menu.Positioner>
-            <Menu.Content minW="240px">
-              <Menu.Item value="browse" onSelect={() => props.onOpenBrowse()}>
-                Browse…
-              </Menu.Item>
-              {recent.length > 0 && <Menu.Separator />}
-              {recent.map((path) => (
-                <Menu.Item
-                  key={path}
-                  value={path}
-                  title={path}
-                  onSelect={() => props.onOpenRecent(path)}
-                >
-                  <Text truncate fontSize="sm" maxW="220px">
-                    {path.split(/[/\\]/).pop() ?? path}
-                  </Text>
+            <Menu.Positioner>
+              <Menu.Content {...menuContentStyle} minW="240px">
+                <Menu.Item value="browse" onSelect={() => props.onOpenBrowse()}>
+                  <Text fontSize="sm">Browse…</Text>
                 </Menu.Item>
-              ))}
-            </Menu.Content>
-          </Menu.Positioner>
-        </Menu.Root>
+                {recent.length > 0 && <Menu.Separator />}
+                {recent.map((path) => (
+                  <Menu.Item
+                    key={path}
+                    value={path}
+                    title={path}
+                    onSelect={() => props.onOpenRecent(path)}
+                  >
+                    <Text truncate fontSize="sm" maxW="220px">
+                      {path.split(/[/\\]/).pop() ?? path}
+                    </Text>
+                  </Menu.Item>
+                ))}
+              </Menu.Content>
+            </Menu.Positioner>
+          </Menu.Root>
+        </TTip>
 
         <TTip label={saveLabel}>
           <IconButton
@@ -278,57 +294,57 @@ export function TitleBar(props: {
           </IconButton>
         </TTip>
 
-        <Menu.Root>
-          <TTip label="More — Save as, templates, settings, theme">
+        <TTip label="More — Save as, templates, settings, theme">
+          <Menu.Root positioning={titleBarMenuPositioning}>
             <Menu.Trigger asChild>
               <IconButton aria-label="More options" size="sm" variant="ghost" css={{ _icon: { boxSize: "4" } }}>
                 <MoreHorizontal size={16} />
               </IconButton>
             </Menu.Trigger>
-          </TTip>
-          <Menu.Positioner>
-            <Menu.Content minW="220px">
-              <Menu.Item value="saveas" onSelect={() => props.onSaveAs()}>
-                <HStack justify="space-between" w="full">
-                  <HStack gap={2}>
-                    <SaveAll size={14} />
-                    <Text>Save as…</Text>
+            <Menu.Positioner>
+              <Menu.Content {...menuContentStyle} minW="220px">
+                <Menu.Item value="saveas" onSelect={() => props.onSaveAs()}>
+                  <HStack justify="space-between" w="full">
+                    <HStack gap={2}>
+                      <SaveAll size={14} />
+                      <Text fontSize="sm">Save as…</Text>
+                    </HStack>
+                    <Text fontSize="xs" color="fg.muted">
+                      {modShortcut("Shift+S")}
+                    </Text>
                   </HStack>
-                  <Text fontSize="xs" color="fg.muted">
-                    {modShortcut("Shift+S")}
-                  </Text>
-                </HStack>
-              </Menu.Item>
-              <Menu.Item value="tmpl" onSelect={() => props.onTemplateManager()}>
-                <HStack gap={2}>
-                  <LayoutTemplate size={14} />
-                  <Text>Template manager</Text>
-                </HStack>
-              </Menu.Item>
-              <Menu.Item value="settings" onSelect={() => props.onSettings()}>
-                <HStack gap={2}>
-                  <Settings size={14} />
-                  <Text>Settings</Text>
-                </HStack>
-              </Menu.Item>
-              <Menu.Separator />
-              <Menu.Item value="light" onSelect={() => setColorMode("light")}>
-                <HStack gap={2}>
-                  <Sun size={14} />
-                  <Text>Use light theme</Text>
-                  {colorMode === "light" ? <Text fontSize="xs">✓</Text> : null}
-                </HStack>
-              </Menu.Item>
-              <Menu.Item value="dark" onSelect={() => setColorMode("dark")}>
-                <HStack gap={2}>
-                  <Moon size={14} />
-                  <Text>Use dark theme</Text>
-                  {colorMode === "dark" ? <Text fontSize="xs">✓</Text> : null}
-                </HStack>
-              </Menu.Item>
-            </Menu.Content>
-          </Menu.Positioner>
-        </Menu.Root>
+                </Menu.Item>
+                <Menu.Item value="tmpl" onSelect={() => props.onTemplateManager()}>
+                  <HStack gap={2}>
+                    <LayoutTemplate size={14} />
+                    <Text fontSize="sm">Template manager</Text>
+                  </HStack>
+                </Menu.Item>
+                <Menu.Item value="settings" onSelect={() => props.onSettings()}>
+                  <HStack gap={2}>
+                    <Settings size={14} />
+                    <Text fontSize="sm">Settings</Text>
+                  </HStack>
+                </Menu.Item>
+                <Menu.Separator />
+                <Menu.Item value="light" onSelect={() => setColorMode("light")}>
+                  <HStack gap={2}>
+                    <Sun size={14} />
+                    <Text fontSize="sm">Use light theme</Text>
+                    {colorMode === "light" ? <Text fontSize="xs">✓</Text> : null}
+                  </HStack>
+                </Menu.Item>
+                <Menu.Item value="dark" onSelect={() => setColorMode("dark")}>
+                  <HStack gap={2}>
+                    <Moon size={14} />
+                    <Text fontSize="sm">Use dark theme</Text>
+                    {colorMode === "dark" ? <Text fontSize="xs">✓</Text> : null}
+                  </HStack>
+                </Menu.Item>
+              </Menu.Content>
+            </Menu.Positioner>
+          </Menu.Root>
+        </TTip>
       </HStack>
 
       <Flex flex="1" minW={0} align="center" justify="center" px={4} style={dragStyle} onDoubleClick={onTitleBarDoubleClick}>
@@ -350,6 +366,7 @@ export function TitleBar(props: {
       <HStack gap={0} pr={0} flexShrink={0} align="center" style={noDragStyle}>
         <WindowControls maximized={maximized} />
       </HStack>
-    </Flex>
+      </Flex>
+    </Box>
   );
 }

@@ -16,6 +16,7 @@
     "@emotion/react": "^11.14.0",
     "@platejs/autoformat": "^52.3.10",
     "@platejs/basic-nodes": "^52.3.10",
+    "@platejs/basic-styles": "^52.3.10",
     "@platejs/code-block": "^52.3.14",
     "@platejs/indent": "^52.3.10",
     "@platejs/list": "^52.3.10",
@@ -51,18 +52,27 @@
   "build": {
     "appId": "com.markapp.editor",
     "productName": "MarkApp",
+    "icon": "build/icons/win/icon.ico",
     "directories": {
       "output": "release"
     },
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
-      "templates/**/*"
+      "templates/**/*",
+      "build/icons/**/*"
     ],
     "win": {
+      "icon": "build/icons/win/icon.ico",
       "target": [
         "nsis"
       ]
+    },
+    "mac": {
+      "icon": "build/icons/mac/icon.icns"
+    },
+    "linux": {
+      "icon": "build/icons/png"
     }
   }
 }

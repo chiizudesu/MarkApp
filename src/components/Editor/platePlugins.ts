@@ -8,6 +8,7 @@ import {
   autoformatPunctuation,
   autoformatSmartQuotes,
 } from "@platejs/autoformat";
+import remarkGfm from "remark-gfm";
 import {
   BoldPlugin,
   ItalicPlugin,
@@ -23,15 +24,21 @@ import {
   H6Plugin,
   HorizontalRulePlugin,
 } from "@platejs/basic-nodes/react";
+import {
+  FontColorPlugin,
+  FontFamilyPlugin,
+  FontSizePlugin,
+} from "@platejs/basic-styles/react";
 import { CodeBlockPlugin, CodeLinePlugin, CodeSyntaxPlugin } from "@platejs/code-block/react";
 import { IndentPlugin } from "@platejs/indent/react";
 import { toggleList } from "@platejs/list";
 import { ListPlugin } from "@platejs/list/react";
 import { ImagePlugin } from "@platejs/media/react";
-import { MarkdownPlugin } from "@platejs/markdown";
+import { MarkdownPlugin, remarkMdx } from "@platejs/markdown";
 import { all, createLowlight } from "lowlight";
-import { KEYS } from "platejs";
-import { ParagraphPlugin } from "platejs/react";
+import { Text, type Descendant } from "slate";
+import { createSlatePlugin, KEYS } from "platejs";
+import { ParagraphPlugin, toPlatePlugin } from "platejs/react";
 
 import {
   ParagraphElement,
@@ -97,6 +104,54 @@ const autoformatBlocks: AutoformatRule[] = [
   },
 ];
 
+/** Inline / style keys cleared on a new empty line so typing starts with default formatting. */
+const leafFormatKeys = [
+  KEYS.bold,
+  KEYS.italic,
+  KEYS.underline,
+  KEYS.strikethrough,
+  KEYS.code,
+  KEYS.color,
+  KEYS.backgroundColor,
+  KEYS.fontFamily,
+  KEYS.fontSize,
+] as const;
+
+/**
+ * After Enter, Slate copies marks onto the new block's text. When that block is empty, strip those
+ * marks and the editor's stored marks so the next line starts unformatted (paragraphs, lists, etc.).
+ */
+const clearFormatsOnEmptyNewLinePlugin = toPlatePlugin(
+  createSlatePlugin({
+    key: "clearFormatsOnEmptyNewLine",
+  }).overrideEditor(({ editor, tf: { insertBreak } }) => ({
+    transforms: {
+      insertBreak() {
+        if (
+          editor.api.some({
+            match: { type: editor.getType(KEYS.codeBlock) },
+          })
+        ) {
+          insertBreak();
+          return;
+        }
+        const wasCollapsed = editor.selection !== null && editor.api.isCollapsed();
+        insertBreak();
+        if (!wasCollapsed || !editor.selection || !editor.api.isCollapsed()) return;
+        const block = editor.api.block();
+        if (!block) return;
+        if (!editor.api.isEmpty(editor.selection, { block: true })) return;
+        editor.tf.unsetNodes([...leafFormatKeys], {
+          at: block[1],
+          match: (n: Descendant) => Text.isText(n),
+          split: true,
+        });
+        editor.tf.removeMarks();
+      },
+    },
+  })),
+);
+
 const autoformatLists: AutoformatRule[] = [
   {
     match: ["* ", "- "],
@@ -118,36 +173,38 @@ const autoformatLists: AutoformatRule[] = [
 ];
 
 export const editorPlugins = [
+  clearFormatsOnEmptyNewLinePlugin,
+
   ParagraphPlugin.withComponent(ParagraphElement),
 
   H1Plugin.configure({
     node: { component: H1Element },
-    rules: { break: { empty: "reset" } },
+    rules: { break: { empty: "reset", splitReset: true } },
     shortcuts: { toggle: { keys: "mod+alt+1" } },
   }),
   H2Plugin.configure({
     node: { component: H2Element },
-    rules: { break: { empty: "reset" } },
+    rules: { break: { empty: "reset", splitReset: true } },
     shortcuts: { toggle: { keys: "mod+alt+2" } },
   }),
   H3Plugin.configure({
     node: { component: H3Element },
-    rules: { break: { empty: "reset" } },
+    rules: { break: { empty: "reset", splitReset: true } },
     shortcuts: { toggle: { keys: "mod+alt+3" } },
   }),
   H4Plugin.configure({
     node: { component: H4Element },
-    rules: { break: { empty: "reset" } },
+    rules: { break: { empty: "reset", splitReset: true } },
     shortcuts: { toggle: { keys: "mod+alt+4" } },
   }),
   H5Plugin.configure({
     node: { component: H5Element },
-    rules: { break: { empty: "reset" } },
+    rules: { break: { empty: "reset", splitReset: true } },
     shortcuts: { toggle: { keys: "mod+alt+5" } },
   }),
   H6Plugin.configure({
     node: { component: H6Element },
-    rules: { break: { empty: "reset" } },
+    rules: { break: { empty: "reset", splitReset: true } },
     shortcuts: { toggle: { keys: "mod+alt+6" } },
   }),
 
@@ -185,7 +242,28 @@ export const editorPlugins = [
   StrikethroughPlugin.withComponent(StrikethroughLeaf),
   CodePlugin.withComponent(CodeLeaf),
 
-  MarkdownPlugin,
+  FontColorPlugin.configure({
+    inject: {
+      targetPlugins: [...KEYS.heading, KEYS.p, KEYS.blockquote],
+    },
+  }),
+  FontFamilyPlugin.configure({
+    inject: {
+      targetPlugins: [...KEYS.heading, KEYS.p, KEYS.blockquote],
+    },
+  }),
+  FontSizePlugin.configure({
+    inject: {
+      targetPlugins: [...KEYS.heading, KEYS.p, KEYS.blockquote],
+    },
+  }),
+
+  /** GFM + MDX so font color/family/size survive round-trip as `<span style="...">` via @platejs/markdown fontRules. */
+  MarkdownPlugin.configure({
+    options: {
+      remarkPlugins: [remarkGfm, remarkMdx],
+    },
+  }),
 
   AutoformatPlugin.configure({
     options: {

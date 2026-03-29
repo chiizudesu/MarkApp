@@ -42,24 +42,14 @@ function OutlineItems(props: {
   return (
     <>
       {props.nodes.map((n) => (
-        <Box key={n.id}>
-          <HStackRow
-            title={n.title}
-            depth={props.depth}
-            active={props.activeFrom === n.from}
-            onPick={() => props.onPick(n.from, n.title)}
-            onAddToChat={() => props.onAddToChat(n.from, n.title)}
-          />
-          {n.children.length > 0 && (
-            <OutlineItems
-              nodes={n.children}
-              depth={props.depth + 1}
-              activeFrom={props.activeFrom}
-              onPick={props.onPick}
-              onAddToChat={props.onAddToChat}
-            />
-          )}
-        </Box>
+        <HStackRow
+          key={n.id}
+          title={n.title}
+          depth={0}
+          active={props.activeFrom === n.from}
+          onPick={() => props.onPick(n.from, n.title)}
+          onAddToChat={() => props.onAddToChat(n.from, n.title)}
+        />
       ))}
     </>
   );

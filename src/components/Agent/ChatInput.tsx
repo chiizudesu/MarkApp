@@ -1,6 +1,6 @@
 import { useRef, useState, useMemo } from "react";
-import { Box, Flex, Textarea, HStack, Text, IconButton, Spinner } from "@chakra-ui/react";
-import { ChevronDown, ChevronUp, Send, Trash2 } from "lucide-react";
+import { Box, Flex, Textarea, HStack, Text, IconButton, Spinner, Input } from "@chakra-ui/react";
+import { ChevronDown, ChevronUp, Send, Trash2, Search, X } from "lucide-react";
 import { SectionPill } from "./SectionPill";
 import { MentionDropdown, type MentionOption } from "./MentionDropdown";
 import type { SectionRef } from "@/types/agent";
@@ -22,7 +22,10 @@ export function ChatInput(props: {
   const [text, setText] = useState("");
   const [mentionOpen, setMentionOpen] = useState(false);
   const [pillsExpanded, setPillsExpanded] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
   const ta = useRef<HTMLTextAreaElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const mentionOptions = useMemo((): MentionOption[] => {
     const opts: MentionOption[] = [];
@@ -66,12 +69,39 @@ export function ChatInput(props: {
     return pills;
   }, [props.contextSections, props.mentionDocument, props.mentionClipboard]);
 
+  // Sections filtered by search query (excludes already-added sections)
+  const searchResults = useMemo(() => {
+    if (!searchQuery.trim()) return props.allSectionsForMentions.filter(
+      (s) => !props.contextSections.some((c) => c.id === s.id),
+    );
+    const q = searchQuery.toLowerCase();
+    return props.allSectionsForMentions.filter(
+      (s) =>
+        !props.contextSections.some((c) => c.id === s.id) &&
+        (s.title.toLowerCase().includes(q) || s.content.toLowerCase().includes(q)),
+    );
+  }, [searchQuery, props.allSectionsForMentions, props.contextSections]);
+
   const pickMention = (o: MentionOption) => {
     if (o.type === "document") props.onToggleDocument(true);
     else if (o.type === "clipboard") props.onToggleClipboard(true);
     else props.onAddSectionFromMention(o.section);
     setMentionOpen(false);
     setText((t) => t.replace(/@([\w]*)$/, ""));
+  };
+
+  const addSearchSection = (s: SectionRef) => {
+    props.onAddSectionFromMention(s);
+    setSearchQuery("");
+  };
+
+  const toggleSearch = () => {
+    setSearchOpen((v) => {
+      const next = !v;
+      if (next) setTimeout(() => searchRef.current?.focus(), 50);
+      else setSearchQuery("");
+      return next;
+    });
   };
 
   const send = () => {
@@ -91,6 +121,94 @@ export function ChatInput(props: {
           onClose={() => setMentionOpen(false)}
         />
       )}
+
+      {/* Search dropdown */}
+      {searchOpen && (
+        <Box
+          position="absolute"
+          bottom="100%"
+          left={2.5}
+          right={2.5}
+          mb={1}
+          borderRadius="xl"
+          borderWidth="1px"
+          borderColor={{ _light: "blackAlpha.150", _dark: "whiteAlpha.100" }}
+          bg={{ _light: "white", _dark: "#2a2a2c" }}
+          boxShadow="md"
+          zIndex={20}
+          overflow="hidden"
+          maxH="240px"
+          display="flex"
+          flexDirection="column"
+        >
+          {/* Search input */}
+          <Flex
+            align="center"
+            gap={1.5}
+            px={2.5}
+            py={1.5}
+            borderBottomWidth="1px"
+            borderColor="border.muted"
+          >
+            <Search size={12} color="var(--chakra-colors-fg-muted)" />
+            <Input
+              ref={searchRef}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search sections…"
+              size="xs"
+              fontSize="sm"
+              flex="1"
+              border="none"
+              outline="none"
+              p={0}
+              focusRing="none"
+            />
+            <IconButton
+              aria-label="Close search"
+              size="xs"
+              variant="ghost"
+              minW="16px"
+              h="16px"
+              onClick={toggleSearch}
+            >
+              <X size={10} />
+            </IconButton>
+          </Flex>
+
+          {/* Results */}
+          <Box overflowY="auto" flex="1">
+            {searchResults.length === 0 ? (
+              <Text fontSize="xs" color="fg.muted" px={3} py={2}>
+                {searchQuery ? "No matching sections" : "No sections available"}
+              </Text>
+            ) : (
+              searchResults.slice(0, 12).map((s) => (
+                <Box
+                  key={s.id}
+                  px={3}
+                  py={1.5}
+                  fontSize="xs"
+                  cursor="pointer"
+                  _hover={{ bg: { _light: "blue.50", _dark: "rgba(59,130,246,0.12)" } }}
+                  onClick={() => addSearchSection(s)}
+                >
+                  <Text truncate fontWeight="medium">{s.title}</Text>
+                  <Text
+                    color="fg.muted"
+                    fontSize="10px"
+                    truncate
+                    mt="1px"
+                  >
+                    {s.content.slice(0, 60).trim()}…
+                  </Text>
+                </Box>
+              ))
+            )}
+          </Box>
+        </Box>
+      )}
+
       <Box
         borderRadius="xl"
         borderWidth="1px"
@@ -181,7 +299,7 @@ export function ChatInput(props: {
               send();
             }
           }}
-          placeholder="Ask Claude… (@ for context)"
+          placeholder="Add or Revise something..."
           minH="38px"
           maxH="120px"
           disabled={props.disabled}
@@ -218,6 +336,17 @@ export function ChatInput(props: {
               onClick={props.onClearChat}
             >
               <Trash2 size={12} strokeWidth={1.75} />
+            </IconButton>
+            <IconButton
+              aria-label={searchOpen ? "Close section search" : "Search sections"}
+              size="xs"
+              variant={searchOpen ? "subtle" : "ghost"}
+              colorPalette={searchOpen ? "blue" : undefined}
+              minW="20px"
+              h="20px"
+              onClick={toggleSearch}
+            >
+              <Search size={12} strokeWidth={1.75} />
             </IconButton>
           </HStack>
           <HStack gap={1.5} align="center">

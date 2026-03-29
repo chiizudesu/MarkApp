@@ -1,4 +1,5 @@
-import { Box, Flex, Text, Spinner, List } from "@chakra-ui/react";
+import { Box, Flex, Text, Spinner, List, IconButton, HStack } from "@chakra-ui/react";
+import { Check, Undo2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatMessage as Msg } from "@/types/agent";
@@ -9,7 +10,15 @@ function lineCount(text: string) {
   return text ? text.split(/\r?\n/).length : 0;
 }
 
-export function ChatMessageBubble({ message }: { message: Msg }) {
+export function ChatMessageBubble({
+  message,
+  onAccept,
+  onRevert,
+}: {
+  message: Msg;
+  onAccept?: (msgId: string) => void;
+  onRevert?: (msgId: string) => void;
+}) {
   const isUser = message.role === "user";
   const proposal = message.sectionProposal;
 
@@ -35,14 +44,14 @@ export function ChatMessageBubble({ message }: { message: Msg }) {
     );
   }
 
-  // Assistant with diff proposal: preview + summary, no bubble
+  // Assistant with diff proposal: preview + summary + accept/revert controls
   if (proposal) {
     const removed = lineCount(proposal.oldText);
     const added = lineCount(proposal.newText);
     const title = proposal.sectionTitle?.trim() || "section";
     const hasSummary = proposal.summary && proposal.summary.length > 0;
-    // summary is undefined while loading, [] means done but empty
     const summaryLoading = proposal.summary === undefined;
+    const isDecided = proposal.accepted !== undefined;
 
     return (
       <Box display="flex" flexDirection="column" gap={1.5}>
@@ -89,6 +98,51 @@ export function ChatMessageBubble({ message }: { message: Msg }) {
             ))}
           </List.Root>
         ) : null}
+
+        {/* Accept / Revert controls */}
+        {isDecided ? (
+          <Text
+            fontSize="11px"
+            color={
+              proposal.accepted
+                ? { _light: "green.600", _dark: "green.400" }
+                : { _light: "gray.400", _dark: "gray.500" }
+            }
+            px={0.5}
+          >
+            {proposal.accepted ? "✓ Accepted" : "↩ Reverted"}
+          </Text>
+        ) : (
+          <HStack gap={1.5} px={0.5}>
+            <IconButton
+              aria-label="Accept changes"
+              size="xs"
+              variant="subtle"
+              colorPalette="green"
+              borderRadius="md"
+              h="22px"
+              minW="22px"
+              onClick={() => onAccept?.(message.id)}
+            >
+              <Check size={12} strokeWidth={2.5} />
+            </IconButton>
+            <IconButton
+              aria-label="Revert changes"
+              size="xs"
+              variant="subtle"
+              colorPalette="orange"
+              borderRadius="md"
+              h="22px"
+              minW="22px"
+              onClick={() => onRevert?.(message.id)}
+            >
+              <Undo2 size={12} strokeWidth={2} />
+            </IconButton>
+            <Text fontSize="10px" color="fg.muted">
+              Accept or revert
+            </Text>
+          </HStack>
+        )}
       </Box>
     );
   }

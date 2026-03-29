@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Box, Flex } from "@chakra-ui/react";
+import { Box, Flex, Dialog, Portal, Button, VStack, Field, Input, Text } from "@chakra-ui/react";
 import { useColorMode } from "@/components/ui/color-mode";
 import { PlateEditor, type PlateEditorHandle } from "@/components/Editor/PlateEditor";
 import { EditorToolbar } from "@/components/Editor/EditorToolbar";
@@ -36,7 +36,7 @@ import {
   writeTextFile,
   pushRecent,
 } from "@/services/documentService";
-import { getSectionsFromText, buildOutline, type DocSection } from "@/services/sectionService";
+import { getSectionsFromText, buildOutline, findRelevantSections, type DocSection } from "@/services/sectionService";
 import {
   streamAgentTurn,
   streamSectionReplace,
@@ -45,11 +45,16 @@ import {
   summarizeSectionChanges,
 } from "@/services/claude";
 import type { MessageParam } from "@anthropic-ai/sdk/resources";
-import { Point } from "slate";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatMessage, SectionRef } from "@/types/agent";
 import { stripOuterMarkdownCodeFence } from "@/utils/markdownFence";
+import {
+  MARKAPP_DEFAULT_STARTER_DOC,
+  isEffectivelyBlankDocument,
+  wantsApplyPriorReplyToDoc,
+  lastAssistantDraft,
+} from "@/utils/editorDocContext";
 
 function docTitle(path: string | null) {
   if (!path) return "Untitled";
@@ -79,7 +84,7 @@ export function App() {
   const editorRef = useRef<PlateEditorHandle>(null);
   const [editorKey, setEditorKey] = useState(0);
   const [filePath, setFilePath] = useState<string | null>(null);
-  const [doc, setDoc] = useState("# Hello\n\nStart writing in **MarkApp**.\n");
+  const [doc, setDoc] = useState(MARKAPP_DEFAULT_STARTER_DOC);
   const [dirty, setDirty] = useState(false);
 
   const [agentOpen, setAgentOpen] = useState(true);
@@ -97,6 +102,8 @@ export function App() {
 
   const [activeHeading, setActiveHeading] = useState<string | null>(null);
   const [activeSectionFrom, setActiveSectionFrom] = useState<number | null>(null);
+  /** Timestamp of last explicit outline-pick; syncCursor is suppressed for 800ms after a pick. */
+  const lastOutlinePickRef = useRef<number>(0);
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streamingText, setStreamingText] = useState("");
@@ -107,11 +114,16 @@ export function App() {
 
   const [recentFiles, setRecentFiles] = useState<string[]>([]);
   const [showWelcome, setShowWelcome] = useState(true);
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
   const [resizerHover, setResizerHover] = useState(false);
   const [outlineWidth, setOutlineWidth] = useState(240);
   const [outlineResizerHover, setOutlineResizerHover] = useState(false);
 
   const chatHistoryRef = useRef<MessageParam[]>([]);
+
+  useEffect(() => {
+    setOutlineFromEditor(null);
+  }, [editorKey]);
 
   const refreshRecents = useCallback(async () => {
     const r = (await window.markAPI?.getStore("recentFiles")) as string[] | undefined;
@@ -122,40 +134,29 @@ export function App() {
     void refreshRecents();
   }, [refreshRecents]);
 
-  const sections = useMemo(() => getSectionsFromText(doc), [doc]);
+  const [outlineFromEditor, setOutlineFromEditor] = useState<DocSection[] | null>(null);
+  const sections = outlineFromEditor ?? getSectionsFromText(doc);
   const outline = useMemo(() => buildOutline(sections.filter((s) => s.level > 0)), [sections]);
   const allSectionRefs = useMemo(() => sections.filter((s) => s.level > 0).map(sectionToRef), [sections]);
 
   const wordCount = useMemo(() => doc.trim().split(/\s+/).filter(Boolean).length, [doc]);
+  const sectionCount = useMemo(() => sections.filter((s) => s.level > 0).length, [sections]);
 
   useEffect(() => {
     window.markAPI?.setDirty(dirty);
   }, [dirty]);
 
-  const findCurrentSection = useCallback(() => {
-    const editor = editorRef.current?.getEditor();
-    if (!editor?.selection) return null;
-    const headingTypes = ["h1", "h2", "h3", "h4", "h5", "h6"];
-    let lastHeading: { title: string; from: number } | null = null;
-    for (const [node, path] of editor.api.nodes({
-      at: [],
-      match: (n: any) => headingTypes.includes(n.type),
-    })) {
-      const point = { path, offset: 0 };
-      if (Point.isBefore(point, editor.selection.anchor) || Point.equals(point, editor.selection.anchor)) {
-        lastHeading = { title: editor.api.string(node as any), from: path[0] };
-      }
-    }
-    return lastHeading;
-  }, []);
-
   const syncCursor = useCallback(() => {
-    const heading = findCurrentSection();
-    setActiveHeading(heading?.title ?? null);
-
-    const sec = heading ? sections.find((s) => s.title === heading.title) : null;
-    setActiveSectionFrom(sec?.from ?? null);
-  }, [findCurrentSection, sections]);
+    // Don't let the polling interval override an explicit outline click for a short window.
+    if (Date.now() - lastOutlinePickRef.current < 800) return;
+    const cur = editorRef.current?.getCursorMarkdownSection();
+    // Only update when the caret is in a known section — don't clear the selected highlight
+    // when focus moves away or the caret lands in the preamble.
+    if (cur) {
+      setActiveHeading(cur.title);
+      setActiveSectionFrom(cur.from);
+    }
+  }, []);
 
   useEffect(() => {
     const id = window.setInterval(() => syncCursor(), 400);
@@ -380,11 +381,42 @@ export function App() {
     const handle = editorRef.current;
     if (!handle) return;
     const current = handle.getMarkdown();
-    const nextMd = newText.includes("# ") ? newText : current.replace(oldText, newText);
+    let nextMd: string;
+    if (isEffectivelyBlankDocument(current) || oldText === "") {
+      // Blank or placeholder document — insert the whole response directly
+      nextMd = newText;
+    } else if (newText.includes("# ")) {
+      nextMd = newText;
+    } else {
+      nextMd = current.replace(oldText, newText);
+    }
     handle.setMarkdown(nextMd);
     setDoc(handle.getMarkdown());
     setDirty(true);
   }, []);
+
+  const acceptProposal = useCallback((msgId: string) => {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === msgId && m.sectionProposal
+          ? { ...m, sectionProposal: { ...m.sectionProposal, accepted: true } }
+          : m,
+      ),
+    );
+  }, []);
+
+  const revertProposal = useCallback((msgId: string) => {
+    const msg = messages.find((m) => m.id === msgId);
+    if (!msg?.sectionProposal) return;
+    applySectionReplacementToEditor(msg.sectionProposal.newText, msg.sectionProposal.oldText);
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === msgId && m.sectionProposal
+          ? { ...m, sectionProposal: { ...m.sectionProposal, accepted: false } }
+          : m,
+      ),
+    );
+  }, [messages, applySectionReplacementToEditor]);
 
   const addSectionToChat = (from: number, _title: string) => {
     const sec = sections.find((s) => s.from === from);
@@ -406,13 +438,51 @@ export function App() {
         clip = "(clipboard unavailable)";
       }
     }
+
+    // Auto-grep: when no explicit context sections are set and the doc has content,
+    // silently find relevant sections to include as background context.
+    const hasExplicitContext =
+      contextSections.length > 0 || mentionDocument || mentionClipboard;
+    const autoGrepSections =
+      !hasExplicitContext && doc.trim()
+        ? findRelevantSections(text, sections, 3)
+        : [];
+
+    const effectiveSections = hasExplicitContext
+      ? contextSections
+      : autoGrepSections.map((s) => ({
+          id: s.id,
+          title: s.title,
+          content: s.content,
+          from: s.from,
+          to: s.to,
+        }));
+
     const userContent = buildAgentUserPayload({
       instruction: text,
       fullDocument: doc,
-      sections: contextSections,
+      sections: effectiveSections,
       mentionDocument,
       mentionClipboard: mentionClipboard ? clip : null,
     });
+
+    const priorDraft = lastAssistantDraft(messages);
+    if (wantsApplyPriorReplyToDoc(text) && priorDraft && isEffectivelyBlankDocument(doc)) {
+      const userMsg: ChatMessage = { id: `u-${Date.now()}`, role: "user", content: text };
+      setMessages((m) => [...m, userMsg]);
+      chatHistoryRef.current.push({ role: "user", content: userContent });
+      applySectionReplacementToEditor("", priorDraft);
+      const ack =
+        "Done — I added my previous reply to your document. You can still edit or undo in the editor.";
+      const asst: ChatMessage = {
+        id: `a-${Date.now()}`,
+        role: "assistant",
+        content: ack,
+      };
+      setMessages((m) => [...m, asst]);
+      chatHistoryRef.current.push({ role: "assistant", content: ack });
+      return;
+    }
 
     const userMsg: ChatMessage = { id: `u-${Date.now()}`, role: "user", content: text };
     setMessages((m) => [...m, userMsg]);
@@ -431,12 +501,13 @@ export function App() {
       );
 
       const cleaned = stripOuterMarkdownCodeFence(full);
+      const blankish = isEffectivelyBlankDocument(doc);
       const sectionProposal =
-        contextSections.length === 1 && cleaned
+        cleaned && (contextSections.length === 1 || blankish)
           ? {
-              oldText: contextSections[0].content,
+              oldText: blankish ? "" : contextSections[0].content,
               newText: cleaned,
-              sectionTitle: contextSections[0].title,
+              sectionTitle: blankish ? "Document" : contextSections[0].title,
             }
           : undefined;
 
@@ -481,10 +552,10 @@ export function App() {
   };
 
   const quickAIRun = async (instruction: string) => {
-    const heading = findCurrentSection();
-    const sec = heading
-      ? sections.find((s) => s.title === heading.title)
-      : sections[0] ?? null;
+    const cur = editorRef.current?.getCursorMarkdownSection();
+    const sec = cur
+      ? sections.find((s) => s.from === cur.from && s.level > 0)
+      : sections.filter((s) => s.level > 0)[0] ?? null;
     if (!sec) return;
     setAgentBusy(true);
     try {
@@ -508,6 +579,21 @@ export function App() {
   const copyWholeDoc = async () => {
     await navigator.clipboard.writeText(doc);
     toaster.create({ type: "success", title: "Copied", description: "Entire document copied to clipboard." });
+  };
+
+  const saveAsTemplate = async (name: string) => {
+    const api = window.markAPI;
+    if (!api) return;
+    const dir = await api.userTemplatesDir();
+    const base = name.trim().replace(/\.md$/i, "") || "my_template";
+    const safe = base.replace(/[^a-zA-Z0-9-_]+/g, "_");
+    const path = `${dir}\\${safe}.md`;
+    const r = await api.saveTemplateFile(path, doc);
+    if (!r.ok) {
+      toaster.create({ type: "error", title: "Save failed", description: r.error });
+    } else {
+      toaster.create({ type: "success", title: "Template saved", description: `Saved as "${safe}.md"` });
+    }
   };
 
   useEffect(() => {
@@ -539,8 +625,8 @@ export function App() {
       }
       if (mod && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        const heading = findCurrentSection();
-        setQuickSectionTitle(heading?.title ?? "(no section)");
+        const cur = editorRef.current?.getCursorMarkdownSection();
+        setQuickSectionTitle(cur?.title ?? "(no section)");
         setQuickAIOpen(true);
       }
       if (mod && e.shiftKey && e.key.toLowerCase() === "p") {
@@ -550,7 +636,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [doc, findCurrentSection]);
+  }, [doc]);
 
   const commands: CommandItem[] = useMemo(
     () => [
@@ -655,8 +741,8 @@ export function App() {
         category: "AI",
         shortcut: modShortcut("K"),
         run: () => {
-          const heading = findCurrentSection();
-          setQuickSectionTitle(heading?.title ?? "(no section)");
+          const cur = editorRef.current?.getCursorMarkdownSection();
+          setQuickSectionTitle(cur?.title ?? "(no section)");
           setQuickAIOpen(true);
         },
       },
@@ -697,7 +783,7 @@ export function App() {
           })(),
       },
     ],
-    [doc, findCurrentSection],
+    [doc],
   );
 
   const dragRef = useRef<{ startX: number; startW: number } | null>(null);
@@ -732,6 +818,9 @@ export function App() {
             onToggleAgent={() => setAgentOpen((o) => !o)}
             sectionHoverHighlight={sectionHoverHighlight}
             onToggleSectionHoverHighlight={() => setSectionHoverHighlight((v) => !v)}
+            onOpenTemplates={() => { setShowWelcome(false); setTemplatePickerOpen(true); }}
+            onManageTemplates={() => setTemplateMgrOpen(true)}
+            onSaveAsTemplate={() => setSaveTemplateOpen(true)}
           />
         )}
         <Flex flex="1" minH={0} overflow="hidden">
@@ -749,9 +838,10 @@ export function App() {
                 <DocumentOutline
                   tree={outline}
                   activeFrom={activeSectionFrom}
-                  onPick={(_from, title) => {
-                    editorRef.current?.scrollToHeading(title ?? "");
-                    syncCursor();
+                  onPick={(from) => {
+                    lastOutlinePickRef.current = Date.now();
+                    setActiveSectionFrom(from);
+                    editorRef.current?.focusSectionAtMarkdownFrom(from);
                   }}
                   onAddToChat={addSectionToChat}
                 />
@@ -840,11 +930,17 @@ export function App() {
                   initialMarkdown={doc}
                   isDark={isDark}
                   onMarkdownChange={onMarkdownChange}
-                  onReady={() => syncCursor()}
+                  onReady={() => {
+                    syncCursor();
+                    queueMicrotask(() => editorRef.current?.syncOutlineSections());
+                  }}
                   sections={sections}
                   onAddSectionToAgent={addSectionRefToAgent}
                   onAddSelectionToAgent={addSectionRefToAgent}
                   sectionHoverHighlight={sectionHoverHighlight}
+                  activeSectionMarkdownFrom={activeSectionFrom}
+                  onOutlineSectionsChange={setOutlineFromEditor}
+                  outlineBootGeneration={editorKey}
                 />
               </Box>
             )}
@@ -935,21 +1031,20 @@ export function App() {
                   onSend={(t) => void sendAgentMessage(t)}
                   onClosePanel={() => setAgentOpen(false)}
                   onClearChat={clearChat}
+                  onAcceptProposal={acceptProposal}
+                  onRevertProposal={revertProposal}
                 />
               </Flex>
             </>
           )}
         </Flex>
       </Flex>
-      {!zenMode && (
+      {!zenMode && !showWelcome && (
         <StatusBar
+          sectionCount={sectionCount}
           words={wordCount}
           activeHeading={activeHeading}
           agentStatus={agentBusy ? "Claude…" : streamingText ? "Receiving…" : null}
-          previewMode={previewMode}
-          onTogglePreview={() => setPreviewMode((p) => !p)}
-          zenMode={zenMode}
-          onToggleZen={() => setZenMode((z) => !z)}
         />
       )}
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
@@ -971,6 +1066,71 @@ export function App() {
         sectionTitle={quickSectionTitle}
         onRun={quickAIRun}
       />
+      <SaveAsTemplateDialog
+        open={saveTemplateOpen}
+        onClose={() => setSaveTemplateOpen(false)}
+        onSave={(name) => { void saveAsTemplate(name); setSaveTemplateOpen(false); }}
+      />
     </Flex>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Save As Template dialog
+// ---------------------------------------------------------------------------
+function SaveAsTemplateDialog(props: {
+  open: boolean;
+  onClose: () => void;
+  onSave: (name: string) => void;
+}) {
+  const [name, setName] = useState("");
+
+  const handleSave = () => {
+    props.onSave(name);
+    setName("");
+  };
+
+  return (
+    <Dialog.Root open={props.open} onOpenChange={(e) => !e.open && props.onClose()} size="sm">
+      <Portal>
+        <Dialog.Backdrop bg="blackAlpha.600" />
+        <Dialog.Positioner>
+          <Dialog.Content
+            maxW="360px"
+            bg={{ _light: "white", _dark: "gray.800" }}
+            borderWidth="1px"
+            borderColor={{ _light: "gray.200", _dark: "gray.600" }}
+            shadow="lg"
+          >
+            <Box p={4} borderBottomWidth="1px" borderColor={{ _light: "gray.200", _dark: "gray.600" }}>
+              <Text fontWeight="bold">Save as template</Text>
+              <Text fontSize="xs" color="fg.muted" mt={1}>
+                Saves the current document as a reusable template.
+              </Text>
+            </Box>
+            <VStack align="stretch" p={4} gap={3}>
+              <Field.Root>
+                <Field.Label>Template name</Field.Label>
+                <Input
+                  size="sm"
+                  variant="outline"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="my_template"
+                  onKeyDown={(e) => { if (e.key === "Enter") handleSave(); }}
+                  autoFocus
+                  bg={{ _light: "white", _dark: "gray.900" }}
+                  borderColor={{ _light: "gray.300", _dark: "gray.500" }}
+                />
+              </Field.Root>
+              <Flex gap={2} justify="flex-end">
+                <Button variant="ghost" size="sm" onClick={props.onClose}>Cancel</Button>
+                <Button colorPalette="blue" size="sm" onClick={handleSave}>Save</Button>
+              </Flex>
+            </VStack>
+          </Dialog.Content>
+        </Dialog.Positioner>
+      </Portal>
+    </Dialog.Root>
   );
 }

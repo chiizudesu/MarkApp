@@ -54,6 +54,7 @@ export default defineConfig(async () => ({
     emptyOutDir: true,
   },
   server: {
+    open: false,
     hmr: { overlay: false },
   },
 }));

@@ -19,6 +19,8 @@ export function AgentPanel(props: {
   onSend: (text: string) => void;
   onClosePanel: () => void;
   onClearChat: () => void;
+  onAcceptProposal: (msgId: string) => void;
+  onRevertProposal: (msgId: string) => void;
 }) {
   const streamingSectionProposal =
     props.streamingText && props.contextSections.length === 1
@@ -53,7 +55,12 @@ export function AgentPanel(props: {
           }}
         >
           {props.messages.map((m) => (
-            <ChatMessageBubble key={m.id} message={m} />
+            <ChatMessageBubble
+              key={m.id}
+              message={m}
+              onAccept={props.onAcceptProposal}
+              onRevert={props.onRevertProposal}
+            />
           ))}
           {props.streamingText ? (
             <ChatMessageBubble

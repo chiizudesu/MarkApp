@@ -65,19 +65,34 @@ export function TemplateManager(props: { open: boolean; onClose: () => void }) {
       <Portal>
         <Dialog.Backdrop bg="blackAlpha.600" />
         <Dialog.Positioner>
-          <Dialog.Content maxW="720px" maxH="90vh">
-            <Box p={4} borderBottomWidth="1px">
+          <Dialog.Content
+            maxW="720px"
+            maxH="90vh"
+            bg={{ _light: "white", _dark: "gray.800" }}
+            borderWidth="1px"
+            borderColor={{ _light: "gray.200", _dark: "gray.600" }}
+            shadow="lg"
+          >
+            <Box p={4} borderBottomWidth="1px" borderColor={{ _light: "gray.200", _dark: "gray.600" }}>
               <Text fontWeight="bold">Template manager</Text>
-              <Text fontSize="xs" color="gray.600" mt={1}>
+              <Text fontSize="xs" color="fg.muted" mt={1}>
                 User templates save under your app data folder. Bundled templates are read-only.
               </Text>
             </Box>
             <VStack align="stretch" p={4} gap={3} overflowY="auto" maxH="65vh">
               {items.map((it) => (
-                <HStack key={it.path} justify="space-between" p={2} borderWidth="1px" borderRadius="md">
+                <HStack
+                  key={it.path}
+                  justify="space-between"
+                  p={2}
+                  borderWidth="1px"
+                  borderRadius="md"
+                  borderColor={{ _light: "gray.300", _dark: "gray.600" }}
+                  bg={{ _light: "gray.50", _dark: "gray.900" }}
+                >
                   <Text fontSize="sm" truncate flex="1">
                     {it.name}{" "}
-                    <Text as="span" fontSize="xs" color="gray.500">
+                    <Text as="span" fontSize="xs" color="fg.muted">
                       ({it.source})
                     </Text>
                   </Text>
@@ -93,7 +108,15 @@ export function TemplateManager(props: { open: boolean; onClose: () => void }) {
               </Text>
               <Field.Root>
                 <Field.Label>File name (without .md)</Field.Label>
-                <Input size="sm" value={name} onChange={(e) => setName(e.target.value)} placeholder="my_template" />
+                <Input
+                  size="sm"
+                  variant="outline"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="my_template"
+                  bg={{ _light: "white", _dark: "gray.900" }}
+                  borderColor={{ _light: "gray.300", _dark: "gray.500" }}
+                />
               </Field.Root>
               <Textarea
                 value={content}
@@ -101,6 +124,9 @@ export function TemplateManager(props: { open: boolean; onClose: () => void }) {
                 fontFamily="mono"
                 fontSize="sm"
                 rows={8}
+                variant="outline"
+                bg={{ _light: "white", _dark: "gray.900" }}
+                borderColor={{ _light: "gray.300", _dark: "gray.500" }}
               />
               <Button colorPalette="blue" onClick={() => void saveNew()}>
                 Save template

@@ -27,7 +27,11 @@ export async function testAnthropicConnection(apiKey: string, model: string): Pr
 }
 
 const MARKDOWN_AGENT_SYSTEM = `You are a writing assistant inside MarkApp, a markdown editor.
+Every message includes --- CURRENT DOCUMENT --- with what is in the editor (it may be empty or a single placeholder line like "#"). Do not claim you cannot see the document; use that block and the chat history.
+
 Help refine, structure, or expand the user's document. Prefer clear, concise markdown.
+When the user asks to apply, insert, or use a prior reply in the document, output the full markdown that should appear in the editor (often the same as your last substantive answer), not a refusal.
+
 When the user asks you to rewrite a specific section, respond with ONLY the replacement markdown for that section — no preamble, no code fences, unless the section itself should contain a fenced block.
 For general questions, answer normally in markdown.`;
 
@@ -204,9 +208,10 @@ export function buildAgentUserPayload(parts: {
   mentionClipboard?: string | null;
 }): string {
   const blocks: string[] = [];
-  if (parts.mentionDocument) {
-    blocks.push("--- FULL DOCUMENT ---\n" + parts.fullDocument);
-  }
+  const docLabel = parts.mentionDocument
+    ? "--- FULL DOCUMENT (@document) ---"
+    : "--- CURRENT DOCUMENT ---";
+  blocks.push(docLabel + "\n" + parts.fullDocument);
   for (const s of parts.sections) {
     blocks.push(`--- SECTION ${s.id}: ${s.title} ---\n${s.content}`);
   }

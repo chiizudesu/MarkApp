@@ -41,12 +41,17 @@ let mainWindow: BrowserWindow | null = null;
 let dirtyFlag = false;
 
 function createWindow() {
+  const iconPath = app.isPackaged
+    ? join(process.resourcesPath, 'build/icons/win/icon.ico')
+    : join(app.getAppPath(), 'build/icons/win/icon.ico');
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
     minWidth: 800,
     minHeight: 600,
     frame: false,
+    icon: iconPath,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
       contextIsolation: true,

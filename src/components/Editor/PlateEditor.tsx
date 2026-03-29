@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -10,15 +11,21 @@ import type { Value } from "platejs";
 import { Range as SlateRange } from "slate";
 import { MarkdownPlugin } from "@platejs/markdown";
 import { Plate, PlateContent, usePlateEditor } from "platejs/react";
-import remarkGfm from "remark-gfm";
 import { Menu, Portal, Box, IconButton } from "@chakra-ui/react";
 import { Sparkles } from "lucide-react";
 import { insertImageFromFiles } from "@platejs/media";
 import { editorPlugins } from "./platePlugins";
+import { bumpEditorFontSize } from "@/utils/editorFontSize";
 import {
+  collectBoldOnlyParagraphHints,
   getSectionBlockIndexRangeForTopLevelIndex,
+  getSectionAtPos,
+  getSectionsFromTextWithBoldBlockHints,
   headingLevelFromType,
+  topLevelBlocksIntersectingMarkdownRange,
+  trimBlockSpanToSection,
   type DocSection,
+  type OutlineBoldBlockHint,
 } from "@/services/sectionService";
 import type { SectionRef } from "@/types/agent";
 
@@ -30,6 +37,12 @@ export type PlateEditorHandle = {
   setMarkdown: (md: string) => void;
   getMarkdown: () => string;
   scrollToHeading: (headingText: string) => void;
+  /** Markdown offset of the outline section containing the caret (level > 0 only). */
+  getCursorMarkdownSection: () => { from: number; title: string } | null;
+  /** Move caret to the start of the section that begins at this markdown offset and scroll it into view. */
+  focusSectionAtMarkdownFrom: (markdownFrom: number) => void;
+  /** Recompute outline sections (bold paragraphs + markdown) and notify App. */
+  syncOutlineSections: () => void;
 };
 
 function sectionToRef(s: DocSection): SectionRef {
@@ -53,6 +66,19 @@ type Props = {
   onAddSelectionToAgent: (ref: SectionRef) => void;
   /** When true, hovering the editor shows the current section outline and + to add to agent. */
   sectionHoverHighlight?: boolean;
+  /**
+   * Outline / caret sync: markdown offset of the active section’s start (same as `DocSection.from`).
+   * Resolved inside the editor against live serialize + block starts so `to` matches `topLevelBlocksIntersectingMarkdownRange`
+   * (avoids highlight ending early when App `sections` came from stale `doc`).
+   */
+  activeSectionMarkdownFrom?: number | null;
+  /** Full section list (markdown + bold-only paragraphs); keeps sidebar aligned with WYSIWYG. */
+  onOutlineSectionsChange?: (sections: DocSection[]) => void;
+  /**
+   * Pass App’s `editorKey` (or any int that bumps on remount / new file).
+   * Plate may not emit `onValueChange` before first interaction; we sync outline once when this changes.
+   */
+  outlineBootGeneration?: number;
 };
 
 export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEditor(
@@ -65,6 +91,9 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
     onAddSectionToAgent,
     onAddSelectionToAgent,
     sectionHoverHighlight = true,
+    activeSectionMarkdownFrom = null,
+    onOutlineSectionsChange,
+    outlineBootGeneration = 0,
   },
   ref,
 ) {
@@ -82,8 +111,19 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
     height: number;
   } | null>(null);
   const [hoverSectionBlocks, setHoverSectionBlocks] = useState<{ b0: number; b1: number } | null>(null);
+  const [pinnedRegion, setPinnedRegion] = useState<{
+    top: number;
+    left: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const [pinnedSectionBlocks, setPinnedSectionBlocks] = useState<{ b0: number; b1: number } | null>(null);
+  const [mouseInEditorChrome, setMouseInEditorChrome] = useState(false);
   const hoverRegionRef = useRef(hoverRegion);
   const hoverSectionBlocksRef = useRef(hoverSectionBlocks);
+  /** Lazily rebuilt when serialized markdown changes — aligns block indices with getSectionsFromText. */
+  const mdBlockStartsCacheRef = useRef<{ md: string; starts: number[] } | null>(null);
+  const boldHintsRef = useRef<OutlineBoldBlockHint[]>([]);
   useEffect(() => {
     hoverRegionRef.current = hoverRegion;
   }, [hoverRegion]);
@@ -95,10 +135,7 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
 
   const editor = usePlateEditor({
     plugins: editorPlugins,
-    value: (ed) =>
-      ed.getApi(MarkdownPlugin).markdown.deserialize(initialMarkdown, {
-        remarkPlugins: [remarkGfm],
-      }),
+    value: (ed) => ed.getApi(MarkdownPlugin).markdown.deserialize(initialMarkdown),
   });
 
   const serializeToMarkdown = useCallback((): string => {
@@ -109,35 +146,254 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
     }
   }, [editor]);
 
-  useImperativeHandle(ref, () => ({
-    getEditor: () => editor,
-    setMarkdown: (md: string) => {
-      const nodes = editor.getApi(MarkdownPlugin).markdown.deserialize(md, {
-        remarkPlugins: [remarkGfm],
-      });
-      editor.tf.reset();
-      editor.tf.setValue(nodes);
-    },
-    getMarkdown: serializeToMarkdown,
-    scrollToHeading: (headingText: string) => {
-      const headingTypes = ["h1", "h2", "h3", "h4", "h5", "h6"];
-      for (const [node, path] of editor.api.nodes({
-        at: [],
-        match: (n: any) => headingTypes.includes(n.type),
-      })) {
-        const text = editor.api.string(node as any);
-        if (text.trim() === headingText.trim()) {
-          editor.tf.select(path);
-          editor.tf.focus();
-          const domNode = editor.api.toDOMNode(node as any);
-          if (domNode) {
-            domNode.scrollIntoView({ behavior: "smooth", block: "center" });
-          }
-          return;
-        }
+  const getMarkdownBlockStarts = useCallback((): { md: string; starts: number[] } => {
+    const children = editor.children as Value;
+    const md = editor.getApi(MarkdownPlugin).markdown.serialize({ value: children });
+    const hit = mdBlockStartsCacheRef.current;
+    if (hit && hit.md === md) return hit;
+
+    const n = children.length;
+    const starts = new Array<number>(n + 1);
+    starts[0] = 0;
+    const api = editor.getApi(MarkdownPlugin);
+    for (let i = 0; i < n; i++) {
+      try {
+        starts[i + 1] = api.markdown.serialize({
+          value: children.slice(0, i + 1) as Value,
+        }).length;
+      } catch {
+        starts[i + 1] = starts[i];
       }
+    }
+    const next = { md, starts };
+    mdBlockStartsCacheRef.current = next;
+    return next;
+  }, [editor]);
+
+  const resolveSectionBlockRange = useCallback(
+    (blockIndex: number): [number, number] => {
+      try {
+        const children = editor.children as Value;
+        const { md, starts } = getMarkdownBlockStarts();
+        const hints = collectBoldOnlyParagraphHints(children as unknown[], starts);
+        boldHintsRef.current = hints;
+        const docSections = getSectionsFromTextWithBoldBlockHints(md, hints);
+        const nBlocks = children.length;
+        const idx = Math.min(Math.max(0, blockIndex), Math.max(0, nBlocks - 1));
+        const blockStartOffset = nBlocks === 0 ? 0 : starts[idx] ?? 0;
+        const sec = getSectionAtPos(docSections, blockStartOffset);
+        if (sec) {
+          const span = topLevelBlocksIntersectingMarkdownRange(starts, sec.from, sec.to);
+          if (span) {
+            return trimBlockSpanToSection(
+              span[0], span[1],
+              children as Array<{ type?: string }>,
+              starts, sec, docSections,
+            );
+          }
+        }
+      } catch {
+        /* fall through */
+      }
+      return getSectionBlockIndexRangeForTopLevelIndex(
+        editor.children as Array<{ type?: string }>,
+        blockIndex,
+      );
     },
-  }));
+    [editor, getMarkdownBlockStarts],
+  );
+
+  const syncOutlineSections = useCallback(() => {
+    try {
+      const children = editor.children as Value;
+      const { md, starts } = getMarkdownBlockStarts();
+      const hints = collectBoldOnlyParagraphHints(children as unknown[], starts);
+      boldHintsRef.current = hints;
+      onOutlineSectionsChange?.(getSectionsFromTextWithBoldBlockHints(md, hints));
+    } catch {
+      /* ignore */
+    }
+  }, [editor, getMarkdownBlockStarts, onOutlineSectionsChange]);
+
+  const syncOutlineSectionsRef = useRef(syncOutlineSections);
+  syncOutlineSectionsRef.current = syncOutlineSections;
+
+  useLayoutEffect(() => {
+    queueMicrotask(() => {
+      try {
+        syncOutlineSectionsRef.current();
+      } catch {
+        /* ignore */
+      }
+    });
+  }, [outlineBootGeneration]);
+
+  const layoutRegionForBlockRange = useCallback(
+    (b0: number, b1: number, pad: number): { top: number; left: number; width: number; height: number } | null => {
+      const pageEl = pageRef.current;
+      if (!pageEl) return null;
+      const pr = pageEl.getBoundingClientRect();
+      let top: number | null = null;
+      let bottom: number | null = null;
+      let left: number | null = null;
+      let right: number | null = null;
+      const children = editor.children as Value;
+      for (let i = b0; i <= b1 && i < children.length; i++) {
+        const node = children[i];
+        const dom = editor.api.toDOMNode(node as any);
+        if (!dom) continue;
+        const br = dom.getBoundingClientRect();
+        const t = br.top - pr.top;
+        const b = br.bottom - pr.top;
+        const l = br.left - pr.left;
+        const r = br.right - pr.left;
+        if (top === null || t < top) top = t;
+        if (bottom === null || b > bottom) bottom = b;
+        if (left === null || l < left) left = l;
+        if (right === null || r > right) right = r;
+      }
+      if (top === null || bottom === null || left === null || right === null) return null;
+      return {
+        top: top - pad,
+        left: left - pad,
+        width: Math.max(12, right - left + pad * 2),
+        height: Math.max(12, bottom - top + pad * 2),
+      };
+    },
+    [editor],
+  );
+
+  useLayoutEffect(() => {
+    if (activeSectionMarkdownFrom == null) {
+      setPinnedRegion(null);
+      setPinnedSectionBlocks(null);
+      return;
+    }
+    try {
+      const children = editor.children as Value;
+      const { md, starts } = getMarkdownBlockStarts();
+      const hints = collectBoldOnlyParagraphHints(children as unknown[], starts);
+      const docSections = getSectionsFromTextWithBoldBlockHints(md, hints);
+      const sec =
+        docSections.find((s) => s.level > 0 && s.from === activeSectionMarkdownFrom) ??
+        getSectionAtPos(docSections, activeSectionMarkdownFrom);
+      if (!sec || sec.level <= 0) {
+        setPinnedRegion(null);
+        setPinnedSectionBlocks(null);
+        return;
+      }
+      const span = topLevelBlocksIntersectingMarkdownRange(starts, sec.from, sec.to);
+      if (!span) {
+        setPinnedRegion(null);
+        setPinnedSectionBlocks(null);
+        return;
+      }
+      const [b0, b1] = trimBlockSpanToSection(
+        span[0], span[1],
+        children as Array<{ type?: string }>,
+        starts, sec, docSections,
+      );
+      setPinnedSectionBlocks({ b0, b1 });
+      setPinnedRegion(layoutRegionForBlockRange(b0, b1, 6));
+    } catch {
+      setPinnedRegion(null);
+      setPinnedSectionBlocks(null);
+    }
+  }, [
+    activeSectionMarkdownFrom,
+    editor.children,
+    getMarkdownBlockStarts,
+    layoutRegionForBlockRange,
+  ]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      getEditor: () => editor,
+      setMarkdown: (md: string) => {
+        const nodes = editor.getApi(MarkdownPlugin).markdown.deserialize(md);
+        editor.tf.reset();
+        editor.tf.setValue(nodes);
+        queueMicrotask(() => {
+          try {
+            syncOutlineSections();
+          } catch {
+            /* ignore */
+          }
+        });
+      },
+      getMarkdown: serializeToMarkdown,
+      scrollToHeading: (headingText: string) => {
+        const headingTypes = ["h1", "h2", "h3", "h4", "h5", "h6"];
+        for (const [node, path] of editor.api.nodes({
+          at: [],
+          match: (n: any) => headingTypes.includes(n.type),
+        })) {
+          const text = editor.api.string(node as any);
+          if (text.trim() === headingText.trim()) {
+            editor.tf.select(path);
+            editor.tf.focus();
+            const domNode = editor.api.toDOMNode(node as any);
+            if (domNode) {
+              domNode.scrollIntoView({ behavior: "smooth", block: "center" });
+            }
+            return;
+          }
+        }
+      },
+      getCursorMarkdownSection: (): { from: number; title: string } | null => {
+        const sel = editor.selection;
+        if (!sel) return null;
+        const block = editor.api.block({ at: sel, highest: true });
+        if (!block) return null;
+        const blockIndex = block[1][0]!;
+        try {
+          const children = editor.children as Value;
+          const { md, starts } = getMarkdownBlockStarts();
+          const hints = collectBoldOnlyParagraphHints(children as unknown[], starts);
+          boldHintsRef.current = hints;
+          const docSections = getSectionsFromTextWithBoldBlockHints(md, hints);
+          const nBlocks = (editor.children as Value).length;
+          const idx = Math.min(Math.max(0, blockIndex), Math.max(0, nBlocks - 1));
+          const blockStartOffset = nBlocks === 0 ? 0 : starts[idx] ?? 0;
+          const sec = getSectionAtPos(docSections, blockStartOffset);
+          if (!sec || sec.level <= 0) return null;
+          return { from: sec.from, title: sec.title };
+        } catch {
+          return null;
+        }
+      },
+      focusSectionAtMarkdownFrom: (markdownFrom: number) => {
+        try {
+          const children = editor.children as Value;
+          const { md, starts } = getMarkdownBlockStarts();
+          const hints = collectBoldOnlyParagraphHints(children as unknown[], starts);
+          boldHintsRef.current = hints;
+          const docSections = getSectionsFromTextWithBoldBlockHints(md, hints);
+          const sec =
+            docSections.find((s) => s.level > 0 && s.from === markdownFrom) ??
+            getSectionAtPos(docSections, markdownFrom);
+          if (!sec) return;
+          const blocksSpan = topLevelBlocksIntersectingMarkdownRange(starts, sec.from, sec.to);
+          if (!blocksSpan) return;
+          const [b0] = blocksSpan;
+          const startPoint = editor.api.start([b0]);
+          if (!startPoint) return;
+          editor.tf.select({ anchor: startPoint, focus: startPoint });
+          editor.tf.focus();
+          const node = children[b0];
+          const dom = editor.api.toDOMNode(node as any);
+          dom?.scrollIntoView({ behavior: "smooth", block: "center" });
+        } catch {
+          /* ignore */
+        }
+      },
+      syncOutlineSections: () => {
+        syncOutlineSections();
+      },
+    }),
+    [editor, getMarkdownBlockStarts, serializeToMarkdown, syncOutlineSections],
+  );
 
   const handleChange = useCallback(
     ({ value }: { value: Value }) => {
@@ -148,11 +404,12 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
       try {
         const md = editor.getApi(MarkdownPlugin).markdown.serialize({ value });
         onMarkdownChange(md);
+        syncOutlineSections();
       } catch {
         // serialization may fail transiently during rapid edits
       }
     },
-    [editor, onMarkdownChange, onReady],
+    [editor, onMarkdownChange, onReady, syncOutlineSections],
   );
 
   const liveSectionFromBlockRange = useCallback(
@@ -216,9 +473,12 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
           y >= hr.top - m &&
           y <= hr.top + hr.height + m;
 
+        // While the pointer is within the sticky chrome zone (the highlight border + button),
+        // freeze the current region — prevent both clearing and shifting to a neighbouring section.
+        if (inStickyChrome) return;
+
         const range = editor.api.findEventRange(e.nativeEvent);
         if (!range) {
-          if (inStickyChrome) return;
           setHoverRegion(null);
           setHoverSectionBlocks(null);
           return;
@@ -226,51 +486,29 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
         const point = SlateRange.isCollapsed(range) ? range.anchor : range.focus;
         const block = editor.api.block({ at: point, highest: true });
         if (!block) {
-          if (inStickyChrome) return;
           setHoverRegion(null);
           setHoverSectionBlocks(null);
           return;
         }
         const blockIndex = block[1][0]!;
-        const [b0, b1] = getSectionBlockIndexRangeForTopLevelIndex(
-          editor.children as Array<{ type?: string }>,
-          blockIndex,
-        );
-        let top: number | null = null;
-        let bottom: number | null = null;
-        let left: number | null = null;
-        let right: number | null = null;
-        for (let i = b0; i <= b1 && i < editor.children.length; i++) {
-          const node = editor.children[i];
-          const dom = editor.api.toDOMNode(node as any);
-          if (!dom) continue;
-          const br = dom.getBoundingClientRect();
-          const t = br.top - pr.top;
-          const b = br.bottom - pr.top;
-          const l = br.left - pr.left;
-          const r = br.right - pr.left;
-          if (top === null || t < top) top = t;
-          if (bottom === null || b > bottom) bottom = b;
-          if (left === null || l < left) left = l;
-          if (right === null || r > right) right = r;
-        }
-        if (top === null || bottom === null || left === null || right === null) {
-          if (inStickyChrome) return;
+        const [b0, b1] = resolveSectionBlockRange(blockIndex);
+        const layout = layoutRegionForBlockRange(b0, b1, 6);
+        if (!layout) {
           setHoverRegion(null);
           setHoverSectionBlocks(null);
           return;
         }
-        const pad = 6;
         setHoverSectionBlocks({ b0, b1 });
-        setHoverRegion({
-          top: top - pad,
-          left: left - pad,
-          width: Math.max(12, right - left + pad * 2),
-          height: Math.max(12, bottom - top + pad * 2),
-        });
+        setHoverRegion(layout);
       });
     },
-    [contextMenuOpen, editor, sectionHoverHighlight],
+    [
+      contextMenuOpen,
+      editor,
+      layoutRegionForBlockRange,
+      resolveSectionBlockRange,
+      sectionHoverHighlight,
+    ],
   );
 
   useEffect(() => {
@@ -342,11 +580,16 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
       if (e.code === "Digit0" || e.code === "Numpad0") {
         e.preventDefault();
         setEditorZoom(1);
+        return;
+      }
+      if ((e.code === "BracketLeft" || e.code === "BracketRight") && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        bumpEditorFontSize(editor, e.code === "BracketRight" ? 1 : -1);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [editor]);
 
   const getSelectionMarkdown = useCallback((): string | null => {
     const sel = editor.selection;
@@ -398,9 +641,7 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
       return;
     }
     if (!text) return;
-    const nodes = editor.getApi(MarkdownPlugin).markdown.deserialize(text, {
-      remarkPlugins: [remarkGfm],
-    });
+    const nodes = editor.getApi(MarkdownPlugin).markdown.deserialize(text);
     editor.tf.insertFragment(nodes);
   }, [editor]);
 
@@ -422,12 +663,9 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
     const block = editor.api.block({ at: point, highest: true });
     if (!block) return null;
     const blockIndex = block[1][0]!;
-    const [b0, b1] = getSectionBlockIndexRangeForTopLevelIndex(
-      editor.children as Array<{ type?: string }>,
-      blockIndex,
-    );
+    const [b0, b1] = resolveSectionBlockRange(blockIndex);
     return liveSectionFromBlockRange(b0, b1);
-  }, [editor, liveSectionFromBlockRange]);
+  }, [editor, liveSectionFromBlockRange, resolveSectionBlockRange]);
 
   const runAddSection = useCallback(() => {
     const sec = sectionAtContext();
@@ -448,12 +686,21 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
   }, [getSelectionMarkdown, onAddSelectionToAgent]);
 
   const runAddHoveredSection = useCallback(() => {
-    const hb = hoverSectionBlocks;
+    const showHover =
+      sectionHoverHighlight && mouseInEditorChrome && hoverSectionBlocks !== null;
+    const hb = showHover ? hoverSectionBlocks : pinnedSectionBlocks;
     if (!hb) return;
     const sec = liveSectionFromBlockRange(hb.b0, hb.b1);
     if (!sec) return;
     onAddSectionToAgent(sectionToRef(sec));
-  }, [hoverSectionBlocks, liveSectionFromBlockRange, onAddSectionToAgent]);
+  }, [
+    hoverSectionBlocks,
+    liveSectionFromBlockRange,
+    mouseInEditorChrome,
+    onAddSectionToAgent,
+    pinnedSectionBlocks,
+    sectionHoverHighlight,
+  ]);
 
   const handleEditorPaste = useCallback(
     (e: React.ClipboardEvent) => {
@@ -504,9 +751,11 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
             onPointerDownCapture={(e) => {
               if (wrapRef.current?.contains(e.target as Node)) editorPointerDownRef.current = true;
             }}
+            onMouseEnter={() => setMouseInEditorChrome(true)}
             onMouseMove={updateHoverRegion}
             onMouseLeave={(e) => {
               if (e.buttons !== 0 || editorPointerDownRef.current) return;
+              setMouseInEditorChrome(false);
               clearHoverRegion();
             }}
             onContextMenu={(e) => {
@@ -536,46 +785,107 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
               /* Scales the whole “sheet” + Slate surface (Word-style); desk bg outside is untouched. */
               style={{ zoom: editorZoom }}
             >
-              {sectionHoverHighlight && hoverRegion && (
-                <Box
-                  position="absolute"
-                  top={`${hoverRegion.top}px`}
-                  left={`${hoverRegion.left}px`}
-                  w={`${hoverRegion.width}px`}
-                  h={`${hoverRegion.height}px`}
-                  borderWidth="1px"
-                  borderStyle="solid"
-                  borderColor="rgba(126, 58, 242, 0.65)"
-                  borderRadius="lg"
-                  bg="rgba(139, 92, 246, 0.07)"
-                  pointerEvents="none"
-                  zIndex={2}
-                  overflow="visible"
-                  boxSizing="border-box"
-                >
-                  <IconButton
-                    aria-label="Add section to agent chat"
-                    size="xs"
-                    variant="outline"
-                    colorPalette="purple"
-                    pointerEvents="auto"
-                    position="absolute"
-                    top="-22px"
-                    right="-22px"
-                    zIndex={1}
-                    borderRadius="md"
-                    minW="22px"
-                    h="22px"
-                    onMouseDown={(ev) => ev.preventDefault()}
-                    onClick={(ev) => {
-                      ev.stopPropagation();
-                      runAddHoveredSection();
-                    }}
-                  >
-                    <Sparkles size={13} />
-                  </IconButton>
-                </Box>
-              )}
+              {(() => {
+                const showHoverOutline =
+                  sectionHoverHighlight && mouseInEditorChrome && hoverRegion !== null;
+                const hoverMatchesPinned =
+                  hoverSectionBlocks !== null &&
+                  pinnedSectionBlocks !== null &&
+                  hoverSectionBlocks.b0 === pinnedSectionBlocks.b0 &&
+                  hoverSectionBlocks.b1 === pinnedSectionBlocks.b1;
+
+                // Pinned (selected) box — always shown when a section is active.
+                const showPinned =
+                  pinnedRegion != null &&
+                  (sectionHoverHighlight || activeSectionMarkdownFrom != null);
+                // Hover box — shown when hovering a *different* section than the selected one.
+                const showHover = showHoverOutline && !hoverMatchesPinned && hoverRegion != null;
+
+                return (
+                  <>
+                    {showPinned && pinnedRegion && (
+                      <Box
+                        position="absolute"
+                        top={`${pinnedRegion.top}px`}
+                        left={`${pinnedRegion.left}px`}
+                        w={`${pinnedRegion.width}px`}
+                        h={`${pinnedRegion.height}px`}
+                        borderWidth="1px"
+                        borderStyle="solid"
+                        borderColor="rgba(126, 58, 242, 0.65)"
+                        borderRadius="lg"
+                        bg="rgba(139, 92, 246, 0.07)"
+                        pointerEvents="none"
+                        zIndex={2}
+                        overflow="visible"
+                        boxSizing="border-box"
+                      >
+                        <IconButton
+                          aria-label="Add section to agent chat"
+                          size="xs"
+                          variant="outline"
+                          colorPalette="purple"
+                          pointerEvents="auto"
+                          position="absolute"
+                          top="-22px"
+                          right="-22px"
+                          zIndex={1}
+                          borderRadius="md"
+                          minW="22px"
+                          h="22px"
+                          onMouseDown={(ev) => ev.preventDefault()}
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            runAddHoveredSection();
+                          }}
+                        >
+                          <Sparkles size={13} />
+                        </IconButton>
+                      </Box>
+                    )}
+                    {showHover && hoverRegion && (
+                      <Box
+                        position="absolute"
+                        top={`${hoverRegion.top}px`}
+                        left={`${hoverRegion.left}px`}
+                        w={`${hoverRegion.width}px`}
+                        h={`${hoverRegion.height}px`}
+                        borderWidth="1px"
+                        borderStyle="dashed"
+                        borderColor="rgba(160, 160, 170, 0.35)"
+                        borderRadius="lg"
+                        bg="rgba(0, 0, 0, 0.025)"
+                        pointerEvents="none"
+                        zIndex={2}
+                        overflow="visible"
+                        boxSizing="border-box"
+                      >
+                        <IconButton
+                          aria-label="Add section to agent chat"
+                          size="xs"
+                          variant="outline"
+                          colorPalette="gray"
+                          pointerEvents="auto"
+                          position="absolute"
+                          top="-22px"
+                          right="-22px"
+                          zIndex={1}
+                          borderRadius="md"
+                          minW="22px"
+                          h="22px"
+                          onMouseDown={(ev) => ev.preventDefault()}
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            runAddHoveredSection();
+                          }}
+                        >
+                          <Sparkles size={13} />
+                        </IconButton>
+                      </Box>
+                    )}
+                  </>
+                );
+              })()}
               <PlateContent
                 className="markapp-plate-content markapp-light"
                 placeholder="Start writing..."
