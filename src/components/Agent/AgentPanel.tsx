@@ -1,8 +1,8 @@
 import { Box, Flex } from "@chakra-ui/react";
 import { ChatMessageBubble } from "./ChatMessage";
 import { ChatInput } from "./ChatInput";
-import { DiffProposal } from "./DiffProposal";
 import type { ChatMessage, SectionRef } from "@/types/agent";
+import { stripOuterMarkdownCodeFence } from "@/utils/markdownFence";
 
 export function AgentPanel(props: {
   messages: ChatMessage[];
@@ -17,10 +17,18 @@ export function AgentPanel(props: {
   onToggleClipboard: (v: boolean) => void;
   busy: boolean;
   onSend: (text: string) => void;
-  proposal: { oldText: string; newText: string } | null;
-  onAcceptProposal: () => void;
-  onRejectProposal: () => void;
+  onClosePanel: () => void;
+  onClearChat: () => void;
 }) {
+  const streamingSectionProposal =
+    props.streamingText && props.contextSections.length === 1
+      ? {
+          oldText: props.contextSections[0].content,
+          newText: stripOuterMarkdownCodeFence(props.streamingText),
+          sectionTitle: props.contextSections[0].title,
+        }
+      : undefined;
+
   return (
     <Flex
       direction="column"
@@ -48,14 +56,16 @@ export function AgentPanel(props: {
             <ChatMessageBubble key={m.id} message={m} />
           ))}
           {props.streamingText ? (
-            <ChatMessageBubble message={{ id: "stream", role: "assistant", content: props.streamingText }} />
+            <ChatMessageBubble
+              message={{
+                id: "stream",
+                role: "assistant",
+                content: props.streamingText,
+                sectionProposal: streamingSectionProposal,
+              }}
+            />
           ) : null}
         </Box>
-        {props.proposal && (
-          <Box px={3} pb={2}>
-            <DiffProposal onAcceptAll={props.onAcceptProposal} onRejectAll={props.onRejectProposal} />
-          </Box>
-        )}
         <ChatInput
           contextSections={props.contextSections}
           onRemoveContext={props.onRemoveContext}
@@ -66,7 +76,9 @@ export function AgentPanel(props: {
           onToggleClipboard={props.onToggleClipboard}
           onAddSectionFromMention={props.onAddSection}
           disabled={props.busy}
+          busy={props.busy}
           onSend={props.onSend}
+          onClearChat={props.onClearChat}
         />
       </Flex>
     </Flex>

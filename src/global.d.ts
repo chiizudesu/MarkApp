@@ -18,6 +18,7 @@ declare global {
       userTemplatesDir: () => Promise<string>;
       dialogOpen: () => Promise<string | null>;
       dialogSave: (defaultPath?: string) => Promise<string | null>;
+      dialogOpenDirectory: () => Promise<string | null>;
       readFile: (
         filePath: string
       ) => Promise<{ ok: true; content: string } | { ok: false; error: string }>;

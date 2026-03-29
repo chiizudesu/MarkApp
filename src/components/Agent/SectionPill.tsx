@@ -20,7 +20,7 @@ export function SectionPill(props: { section: SectionRef; onRemove: () => void }
       maxW="200px"
     >
       <Text as="span" truncate flex="1" title={props.section.title}>
-        § {props.section.title}
+        {props.section.title}
       </Text>
       <IconButton
         aria-label="Remove section"

@@ -3,6 +3,7 @@ import { Flex, Text, HStack, Button } from "@chakra-ui/react";
 export function StatusBar(props: {
   words: number;
   activeHeading?: string | null;
+  agentStatus?: string | null;
   previewMode: boolean;
   onTogglePreview: () => void;
   zenMode?: boolean;
@@ -19,10 +20,11 @@ export function StatusBar(props: {
       fontSize="xs"
       flexShrink={0}
     >
-      <HStack gap={3}>
-        <Text>
+      <HStack gap={3} minW={0}>
+        <Text truncate>
           Words: {props.words}
           {props.activeHeading ? ` · ${props.activeHeading}` : ""}
+          {props.agentStatus ? ` · ${props.agentStatus}` : ""}
         </Text>
       </HStack>
       <HStack gap={2}>

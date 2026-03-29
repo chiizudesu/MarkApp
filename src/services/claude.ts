@@ -13,6 +13,19 @@ async function getModel(): Promise<string> {
   return m?.trim() || "claude-sonnet-4-20250514";
 }
 
+/** Minimal request to verify API key + model (Settings “Test”). */
+export async function testAnthropicConnection(apiKey: string, model: string): Promise<void> {
+  const key = apiKey.trim();
+  if (!key) throw new Error("Enter an API key first.");
+  const m = model.trim() || "claude-sonnet-4-20250514";
+  const c = new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true });
+  await c.messages.create({
+    model: m,
+    max_tokens: 4,
+    messages: [{ role: "user", content: "Hi" }],
+  });
+}
+
 const MARKDOWN_AGENT_SYSTEM = `You are a writing assistant inside MarkApp, a markdown editor.
 Help refine, structure, or expand the user's document. Prefer clear, concise markdown.
 When the user asks you to rewrite a specific section, respond with ONLY the replacement markdown for that section — no preamble, no code fences, unless the section itself should contain a fenced block.
@@ -147,6 +160,39 @@ export async function fillPlaceholdersWithAI(
     return JSON.parse(trimmed) as Record<string, string>;
   } catch {
     throw new Error("Could not parse AI placeholder JSON");
+  }
+}
+
+const CHANGE_SUMMARY_SYSTEM = `You summarize edits made to a markdown section. Return ONLY a JSON array of ≤5 short strings, each describing one concrete change (e.g. "Tightened the opening sentence", "Added detail on X"). No intro text, no markdown, no keys — just the raw JSON array.`;
+
+/** Returns up to 5 bullet strings summarising what changed between oldText → newText. Never throws (returns [] on error). */
+export async function summarizeSectionChanges(
+  oldText: string,
+  newText: string,
+  sectionTitle: string,
+): Promise<string[]> {
+  try {
+    const apiKey = await getKey();
+    const model = await getModel();
+    const c = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
+    const resp = await c.messages.create({
+      model,
+      max_tokens: 300,
+      system: CHANGE_SUMMARY_SYSTEM,
+      messages: [
+        {
+          role: "user",
+          content: `Section: "${sectionTitle}"\n\nBEFORE:\n${oldText.slice(0, 6000)}\n\nAFTER:\n${newText.slice(0, 6000)}`,
+        },
+      ],
+      temperature: 0.2,
+    });
+    const raw = resp.content[0]?.type === "text" ? resp.content[0].text.trim() : "[]";
+    const parsed = JSON.parse(raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""));
+    if (Array.isArray(parsed)) return (parsed as unknown[]).slice(0, 5).map(String);
+    return [];
+  } catch {
+    return [];
   }
 }
 

@@ -24,9 +24,12 @@ import {
   HorizontalRulePlugin,
 } from "@platejs/basic-nodes/react";
 import { CodeBlockPlugin, CodeLinePlugin, CodeSyntaxPlugin } from "@platejs/code-block/react";
+import { IndentPlugin } from "@platejs/indent/react";
+import { toggleList } from "@platejs/list";
 import { ListPlugin } from "@platejs/list/react";
 import { ImagePlugin } from "@platejs/media/react";
 import { MarkdownPlugin } from "@platejs/markdown";
+import { all, createLowlight } from "lowlight";
 import { KEYS } from "platejs";
 import { ParagraphPlugin } from "platejs/react";
 
@@ -40,8 +43,10 @@ import {
   H6Element,
   BlockquoteElement,
   HrElement,
+  BlockList,
   CodeBlockElement,
   CodeLineElement,
+  CodeSyntaxLeaf,
   ImageElement,
   CodeLeaf,
   BoldLeaf,
@@ -49,6 +54,11 @@ import {
   UnderlineLeaf,
   StrikethroughLeaf,
 } from "./plateElements";
+
+const lowlight = createLowlight(all);
+
+/** Blocks that can participate in indent + Plate indent-list. */
+const listIndentInjectTargets = [...KEYS.heading, KEYS.p, KEYS.blockquote, KEYS.codeBlock, KEYS.img];
 
 const autoformatMarks: AutoformatRule[] = [
   { match: "***", mode: "mark", type: [KEYS.bold, KEYS.italic] },
@@ -76,6 +86,15 @@ const autoformatBlocks: AutoformatRule[] = [
       editor.tf.insertNodes({ children: [{ text: "" }], type: KEYS.p });
     },
   },
+  {
+    match: "``` ",
+    mode: "block",
+    type: KEYS.codeBlock,
+    preFormat: (editor) => editor.tf.unwrapNodes(),
+    format: (editor) => {
+      (editor as any).tf.code_block?.toggle?.();
+    },
+  },
 ];
 
 const autoformatLists: AutoformatRule[] = [
@@ -84,7 +103,7 @@ const autoformatLists: AutoformatRule[] = [
     mode: "block",
     type: "list",
     format: (editor) => {
-      (editor as any).tf.list?.toggle?.({ listStyleType: KEYS.ul });
+      toggleList(editor, { listStyleType: "disc" });
     },
   },
   {
@@ -93,7 +112,7 @@ const autoformatLists: AutoformatRule[] = [
     mode: "block",
     type: "list",
     format: (editor) => {
-      (editor as any).tf.list?.toggle?.({ listStyleType: KEYS.ol });
+      toggleList(editor, { listStyleType: "decimal" });
     },
   },
 ];
@@ -139,11 +158,22 @@ export const editorPlugins = [
 
   HorizontalRulePlugin.withComponent(HrElement),
 
-  CodeBlockPlugin.withComponent(CodeBlockElement),
+  CodeBlockPlugin.configure({
+    node: { component: CodeBlockElement },
+    options: { lowlight, defaultLanguage: "plaintext" },
+    shortcuts: { toggle: { keys: "mod+alt+8" } },
+  }),
   CodeLinePlugin.withComponent(CodeLineElement),
-  CodeSyntaxPlugin,
+  CodeSyntaxPlugin.withComponent(CodeSyntaxLeaf),
 
-  ListPlugin,
+  IndentPlugin.configure({
+    inject: { targetPlugins: listIndentInjectTargets },
+    options: { offset: 24 },
+  }),
+  ListPlugin.configure({
+    inject: { targetPlugins: listIndentInjectTargets },
+    render: { belowNodes: BlockList },
+  }),
 
   ImagePlugin.configure({
     node: { component: ImageElement },

@@ -1,4 +1,5 @@
 /* Plate editor theme variables and base styles */
+/* Accent colors align with Chakra theme tokens in src/theme.ts (markapp / blue). */
 
 /* Text/page colors; surface “paper” comes from the doc page wrapper in PlateEditor. */
 .markapp-light {
@@ -55,58 +56,154 @@
   margin: 0.15em 0;
 }
 
+/* lowlight (highlight.js–style) tokens in code blocks */
+.markapp-plate-content pre .hljs-comment,
+.markapp-plate-content pre .hljs-quote {
+  color: #6a737d;
+}
+.markapp-plate-content pre .hljs-keyword,
+.markapp-plate-content pre .hljs-selector-tag,
+.markapp-plate-content pre .hljs-built_in,
+.markapp-plate-content pre .hljs-doctag,
+.markapp-plate-content pre .hljs-section {
+  color: #d73a49;
+}
+.markapp-plate-content pre .hljs-number,
+.markapp-plate-content pre .hljs-literal,
+.markapp-plate-content pre .hljs-variable,
+.markapp-plate-content pre .hljs-template-variable {
+  color: #005cc5;
+}
+.markapp-plate-content pre .hljs-string,
+.markapp-plate-content pre .hljs-regexp {
+  color: #032f62;
+}
+.markapp-plate-content pre .hljs-subst,
+.markapp-plate-content pre .hljs-title,
+.markapp-plate-content pre .hljs-name {
+  color: #6f42c1;
+}
+.markapp-plate-content pre .hljs-attr,
+.markapp-plate-content pre .hljs-attribute {
+  color: #005cc5;
+}
+.markapp-plate-content pre .hljs-symbol,
+.markapp-plate-content pre .hljs-bullet {
+  color: #e36209;
+}
+.markapp-plate-content pre .hljs-meta,
+.markapp-plate-content pre .hljs-meta-keyword {
+  color: #005cc5;
+}
+.markapp-plate-content pre .hljs-function,
+.markapp-plate-content pre .hljs-title.function_ {
+  color: #6f42c1;
+}
+.markapp-plate-content pre .hljs-type,
+.markapp-plate-content pre .hljs-class {
+  color: #22863a;
+}
+.markapp-plate-content pre .hljs-addition {
+  color: #22863a;
+}
+.markapp-plate-content pre .hljs-deletion {
+  color: #b31d28;
+}
+
+.dark .markapp-plate-content pre .hljs-comment,
+.dark .markapp-plate-content pre .hljs-quote {
+  color: #8b949e;
+}
+.dark .markapp-plate-content pre .hljs-keyword,
+.dark .markapp-plate-content pre .hljs-selector-tag,
+.dark .markapp-plate-content pre .hljs-built_in,
+.dark .markapp-plate-content pre .hljs-doctag,
+.dark .markapp-plate-content pre .hljs-section {
+  color: #ff7b72;
+}
+.dark .markapp-plate-content pre .hljs-number,
+.dark .markapp-plate-content pre .hljs-literal,
+.dark .markapp-plate-content pre .hljs-variable,
+.dark .markapp-plate-content pre .hljs-template-variable {
+  color: #79c0ff;
+}
+.dark .markapp-plate-content pre .hljs-string,
+.dark .markapp-plate-content pre .hljs-regexp {
+  color: #a5d6ff;
+}
+.dark .markapp-plate-content pre .hljs-subst,
+.dark .markapp-plate-content pre .hljs-title,
+.dark .markapp-plate-content pre .hljs-name {
+  color: #d2a8ff;
+}
+.dark .markapp-plate-content pre .hljs-attr,
+.dark .markapp-plate-content pre .hljs-attribute {
+  color: #79c0ff;
+}
+.dark .markapp-plate-content pre .hljs-symbol,
+.dark .markapp-plate-content pre .hljs-bullet {
+  color: #ffa657;
+}
+.dark .markapp-plate-content pre .hljs-function,
+.dark .markapp-plate-content pre .hljs-title.function_ {
+  color: #d2a8ff;
+}
+.dark .markapp-plate-content pre .hljs-type,
+.dark .markapp-plate-content pre .hljs-class {
+  color: #7ee787;
+}
+.dark .markapp-plate-content pre .hljs-addition {
+  color: #7ee787;
+}
+.dark .markapp-plate-content pre .hljs-deletion {
+  color: #ffa198;
+}
+
 /* Ensure the editor fills its container */
 .markapp-plate-content [data-slate-editor] {
   min-height: 100%;
 }
 
-/* Scrollable editor canvas: thin track, pill thumb, no arrow buttons (Win/Linux WebKit). */
-.markapp-editor-scroll {
-  scrollbar-gutter: stable;
+/* ─── Global native scrollbars ───────────────────────────────────────────────
+   Thin pill-thumb, no track, no arrow buttons — matches the inline-diff style.
+   Applied to every scrollable element; dark variant via next-themes .dark class. */
+* {
   scrollbar-width: thin;
-  scrollbar-color: rgba(15, 23, 42, 0.35) transparent;
+  scrollbar-color: rgba(15, 23, 42, 0.22) transparent;
 }
-
-.markapp-editor-scroll::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
 }
-
-.markapp-editor-scroll::-webkit-scrollbar-track {
+*::-webkit-scrollbar-track {
   background: transparent;
-  margin-block: 6px;
 }
-
-.markapp-editor-scroll::-webkit-scrollbar-thumb {
-  background-color: rgba(15, 23, 42, 0.28);
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(15, 23, 42, 0.22);
   border-radius: 999px;
-  border: 3px solid transparent;
-  background-clip: padding-box;
 }
-
-.markapp-editor-scroll::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(15, 23, 42, 0.45);
-  background-clip: padding-box;
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(15, 23, 42, 0.4);
 }
-
-.markapp-editor-scroll::-webkit-scrollbar-button,
-.markapp-editor-scroll::-webkit-scrollbar-corner {
+*::-webkit-scrollbar-button,
+*::-webkit-scrollbar-corner {
   display: none;
   width: 0;
   height: 0;
 }
-
-/* Dark app chrome: lighter thumb on dim background */
-.markapp-editor-scroll[data-chrome="dark"] {
-  scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
+.dark * {
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+.dark *::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+.dark *::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.38);
 }
 
-.markapp-editor-scroll[data-chrome="dark"]::-webkit-scrollbar-thumb {
-  background-color: rgba(255, 255, 255, 0.28);
-}
-
-.markapp-editor-scroll[data-chrome="dark"]::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(255, 255, 255, 0.45);
+/* Scrollable editor canvas: reserves gutter so layout never shifts on scroll. */
+.markapp-editor-scroll {
+  scrollbar-gutter: stable;
 }
 
 /* Markdown rendered via react-markdown (preview + agent chat) */
@@ -282,4 +379,28 @@
   padding: 0.05em 0.25em;
   border-radius: 3px;
   background: rgba(128, 128, 128, 0.2);
+}
+
+/* Radix ScrollArea — inline diff preview: geometry overrides for the thumb track.
+   Thumb colours come from the global * rules above. */
+.inline-diff-scroll-area [data-orientation='vertical'] {
+  width: 6px !important;
+  right: 6px !important;
+  top: 4px !important;
+  bottom: 4px !important;
+  padding: 4px 0 !important;
+}
+.inline-diff-scroll-area [data-orientation='vertical'] > div {
+  background: rgba(0, 0, 0, 0.22);
+  border-radius: 24px;
+  transition: background 0.2s;
+}
+.inline-diff-scroll-area [data-orientation='vertical'] > div:hover {
+  background: rgba(0, 0, 0, 0.38);
+}
+.dark .inline-diff-scroll-area [data-orientation='vertical'] > div {
+  background: rgba(255, 255, 255, 0.2);
+}
+.dark .inline-diff-scroll-area [data-orientation='vertical'] > div:hover {
+  background: rgba(255, 255, 255, 0.38);
 }

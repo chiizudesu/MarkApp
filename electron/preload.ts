@@ -10,6 +10,8 @@ const markAPI = {
   dialogOpen: () => ipcRenderer.invoke('mark:dialog-open') as Promise<string | null>,
   dialogSave: (defaultPath?: string) =>
     ipcRenderer.invoke('mark:dialog-save', defaultPath) as Promise<string | null>,
+  dialogOpenDirectory: () =>
+    ipcRenderer.invoke('mark:dialog-open-directory') as Promise<string | null>,
   readFile: (filePath: string) =>
     ipcRenderer.invoke('mark:read-file', filePath) as Promise<
       { ok: true; content: string } | { ok: false; error: string }

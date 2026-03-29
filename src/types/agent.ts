@@ -5,7 +5,13 @@ export interface ChatMessage {
   role: ChatRole;
   content: string;
   /** Present when this assistant message proposes replacing a single section. */
-  sectionProposal?: { oldText: string; newText: string };
+  sectionProposal?: {
+    oldText: string;
+    newText: string;
+    sectionTitle?: string;
+    /** AI-generated bullet points (≤5) summarising what changed. Populated async after streaming. */
+    summary?: string[];
+  };
 }
 
 export interface SectionRef {

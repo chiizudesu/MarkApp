@@ -12,7 +12,7 @@ import { MarkdownPlugin } from "@platejs/markdown";
 import { Plate, PlateContent, usePlateEditor } from "platejs/react";
 import remarkGfm from "remark-gfm";
 import { Menu, Portal, Box, IconButton } from "@chakra-ui/react";
-import { Plus } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import { insertImageFromFiles } from "@platejs/media";
 import { editorPlugins } from "./platePlugins";
 import {
@@ -21,6 +21,9 @@ import {
   type DocSection,
 } from "@/services/sectionService";
 import type { SectionRef } from "@/types/agent";
+
+/** Hit slop outside the purple outline (~20px requested; ≥22 so the sparkle, offset 22px, stays inside the zone). */
+const SECTION_HOVER_OUTSIDE_PX = 22;
 
 export type PlateEditorHandle = {
   getEditor: () => ReturnType<typeof usePlateEditor> | null;
@@ -48,6 +51,8 @@ type Props = {
   sections: DocSection[];
   onAddSectionToAgent: (ref: SectionRef) => void;
   onAddSelectionToAgent: (ref: SectionRef) => void;
+  /** When true, hovering the editor shows the current section outline and + to add to agent. */
+  sectionHoverHighlight?: boolean;
 };
 
 export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEditor(
@@ -59,6 +64,7 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
     sections,
     onAddSectionToAgent,
     onAddSelectionToAgent,
+    sectionHoverHighlight = true,
   },
   ref,
 ) {
@@ -76,6 +82,14 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
     height: number;
   } | null>(null);
   const [hoverSectionBlocks, setHoverSectionBlocks] = useState<{ b0: number; b1: number } | null>(null);
+  const hoverRegionRef = useRef(hoverRegion);
+  const hoverSectionBlocksRef = useRef(hoverSectionBlocks);
+  useEffect(() => {
+    hoverRegionRef.current = hoverRegion;
+  }, [hoverRegion]);
+  useEffect(() => {
+    hoverSectionBlocksRef.current = hoverSectionBlocks;
+  }, [hoverSectionBlocks]);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
   const [editorZoom, setEditorZoom] = useState(1);
 
@@ -171,6 +185,7 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
 
   const updateHoverRegion = useCallback(
     (e: React.MouseEvent) => {
+      if (!sectionHoverHighlight) return;
       if (contextMenuOpen) return;
       // Avoid setState while the user is holding a mouse button (text selection drag).
       // Re-rendering the editor chrome during selection fights the browser/Slate and can
@@ -180,9 +195,30 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
       hoverRaf.current = requestAnimationFrame(() => {
         hoverRaf.current = null;
         if (editorPointerDownRef.current) return;
-        const range = editor.api.findEventRange(e.nativeEvent);
         const pageEl = pageRef.current;
-        if (!range || !pageEl) {
+        if (!pageEl) {
+          setHoverRegion(null);
+          setHoverSectionBlocks(null);
+          return;
+        }
+
+        const pr = pageEl.getBoundingClientRect();
+        const x = e.clientX - pr.left;
+        const y = e.clientY - pr.top;
+        const hr = hoverRegionRef.current;
+        const hbPrev = hoverSectionBlocksRef.current;
+        const m = SECTION_HOVER_OUTSIDE_PX;
+        const inStickyChrome =
+          !!hr &&
+          !!hbPrev &&
+          x >= hr.left - m &&
+          x <= hr.left + hr.width + m &&
+          y >= hr.top - m &&
+          y <= hr.top + hr.height + m;
+
+        const range = editor.api.findEventRange(e.nativeEvent);
+        if (!range) {
+          if (inStickyChrome) return;
           setHoverRegion(null);
           setHoverSectionBlocks(null);
           return;
@@ -190,6 +226,7 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
         const point = SlateRange.isCollapsed(range) ? range.anchor : range.focus;
         const block = editor.api.block({ at: point, highest: true });
         if (!block) {
+          if (inStickyChrome) return;
           setHoverRegion(null);
           setHoverSectionBlocks(null);
           return;
@@ -203,7 +240,6 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
         let bottom: number | null = null;
         let left: number | null = null;
         let right: number | null = null;
-        const pr = pageEl.getBoundingClientRect();
         for (let i = b0; i <= b1 && i < editor.children.length; i++) {
           const node = editor.children[i];
           const dom = editor.api.toDOMNode(node as any);
@@ -219,6 +255,7 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
           if (right === null || r > right) right = r;
         }
         if (top === null || bottom === null || left === null || right === null) {
+          if (inStickyChrome) return;
           setHoverRegion(null);
           setHoverSectionBlocks(null);
           return;
@@ -233,8 +270,15 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
         });
       });
     },
-    [contextMenuOpen, editor],
+    [contextMenuOpen, editor, sectionHoverHighlight],
   );
+
+  useEffect(() => {
+    if (!sectionHoverHighlight) {
+      setHoverRegion(null);
+      setHoverSectionBlocks(null);
+    }
+  }, [sectionHoverHighlight]);
 
   const clearHoverRegion = useCallback(() => {
     if (contextMenuOpen) return;
@@ -472,6 +516,7 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
             <Box
               ref={pageRef}
               position="relative"
+              overflow="visible"
               mx="auto"
               maxW="816px"
               w="100%"
@@ -491,7 +536,7 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
               /* Scales the whole “sheet” + Slate surface (Word-style); desk bg outside is untouched. */
               style={{ zoom: editorZoom }}
             >
-              {hoverRegion && (
+              {sectionHoverHighlight && hoverRegion && (
                 <Box
                   position="absolute"
                   top={`${hoverRegion.top}px`}
@@ -504,7 +549,8 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
                   borderRadius="lg"
                   bg="rgba(139, 92, 246, 0.07)"
                   pointerEvents="none"
-                  zIndex={1}
+                  zIndex={2}
+                  overflow="visible"
                   boxSizing="border-box"
                 >
                   <IconButton
@@ -514,8 +560,9 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
                     colorPalette="purple"
                     pointerEvents="auto"
                     position="absolute"
-                    top="-2px"
-                    right="-2px"
+                    top="-22px"
+                    right="-22px"
+                    zIndex={1}
                     borderRadius="md"
                     minW="22px"
                     h="22px"
@@ -525,7 +572,7 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
                       runAddHoveredSection();
                     }}
                   >
-                    <Plus size={14} />
+                    <Sparkles size={13} />
                   </IconButton>
                 </Box>
               )}

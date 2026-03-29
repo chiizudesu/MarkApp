@@ -140,6 +140,14 @@ app.whenReady().then(() => {
     return p;
   });
 
+  ipcMain.handle('mark:dialog-open-directory', async () => {
+    const r = await dialog.showOpenDialog(mainWindow!, {
+      properties: ['openDirectory'],
+    });
+    if (r.canceled || r.filePaths.length === 0) return null;
+    return r.filePaths[0];
+  });
+
   ipcMain.handle('mark:read-file', async (_e, filePath: string) => {
     try {
       const content = readFileSync(filePath, 'utf-8');

@@ -1,6 +1,6 @@
 import { useRef, useState, useMemo } from "react";
-import { Box, Textarea, HStack, Wrap, WrapItem, Text, IconButton } from "@chakra-ui/react";
-import { ChevronRight, Image as ImageIcon, Mic, Send } from "lucide-react";
+import { Box, Flex, Textarea, HStack, Text, IconButton, Spinner } from "@chakra-ui/react";
+import { ChevronDown, ChevronUp, Send, Trash2 } from "lucide-react";
 import { SectionPill } from "./SectionPill";
 import { MentionDropdown, type MentionOption } from "./MentionDropdown";
 import type { SectionRef } from "@/types/agent";
@@ -14,11 +14,14 @@ export function ChatInput(props: {
   onToggleDocument: (v: boolean) => void;
   onToggleClipboard: (v: boolean) => void;
   disabled?: boolean;
+  busy?: boolean;
   onSend: (text: string) => void;
   onAddSectionFromMention: (section: SectionRef) => void;
+  onClearChat: () => void;
 }) {
   const [text, setText] = useState("");
   const [mentionOpen, setMentionOpen] = useState(false);
+  const [pillsExpanded, setPillsExpanded] = useState(false);
   const ta = useRef<HTMLTextAreaElement>(null);
 
   const mentionOptions = useMemo((): MentionOption[] => {
@@ -40,12 +43,28 @@ export function ChatInput(props: {
 
   const contextCount = useMemo(
     () =>
-      props.contextSections.length + (props.mentionDocument ? 1 : 0) + (props.mentionClipboard ? 1 : 0),
+      props.contextSections.length +
+      (props.mentionDocument ? 1 : 0) +
+      (props.mentionClipboard ? 1 : 0),
     [props.contextSections, props.mentionDocument, props.mentionClipboard],
   );
 
   const hasContextPills =
     props.contextSections.length > 0 || props.mentionDocument || props.mentionClipboard;
+
+  const allPills = useMemo(() => {
+    const pills: { id: string; label: string; onRemove: () => void }[] = [];
+    for (const s of props.contextSections) {
+      pills.push({ id: s.id, label: s.title, onRemove: () => props.onRemoveContext(s.id) });
+    }
+    if (props.mentionDocument) {
+      pills.push({ id: "__doc__", label: "Full document", onRemove: () => props.onToggleDocument(false) });
+    }
+    if (props.mentionClipboard) {
+      pills.push({ id: "__clip__", label: "Clipboard", onRemove: () => props.onToggleClipboard(false) });
+    }
+    return pills;
+  }, [props.contextSections, props.mentionDocument, props.mentionClipboard]);
 
   const pickMention = (o: MentionOption) => {
     if (o.type === "document") props.onToggleDocument(true);
@@ -66,7 +85,11 @@ export function ChatInput(props: {
   return (
     <Box position="relative" px={2.5} pb={2} pt={1.5} flexShrink={0}>
       {mentionOpen && (
-        <MentionDropdown options={mentionOptions} onPick={pickMention} onClose={() => setMentionOpen(false)} />
+        <MentionDropdown
+          options={mentionOptions}
+          onPick={pickMention}
+          onClose={() => setMentionOpen(false)}
+        />
       )}
       <Box
         borderRadius="xl"
@@ -77,39 +100,70 @@ export function ChatInput(props: {
         px={2.5}
         py={1.5}
       >
-        {contextCount > 0 && (
-          <HStack gap={1} mb={1} color="fg.muted">
-            <ChevronRight size={12} strokeWidth={2} style={{ flexShrink: 0, opacity: 0.85 }} />
-            <Text fontSize="xs" fontWeight="medium">
-              {contextCount} context {contextCount === 1 ? "item" : "items"}
-            </Text>
-          </HStack>
-        )}
         {hasContextPills && (
-          <Wrap gap={1} mb={1}>
-            {props.contextSections.map((s) => (
-              <WrapItem key={s.id}>
-                <SectionPill section={s} onRemove={() => props.onRemoveContext(s.id)} />
-              </WrapItem>
-            ))}
-            {props.mentionDocument && (
-              <WrapItem>
-                <SectionPill
-                  section={{ id: "__doc__", title: "Full document", content: "", from: 0, to: 0 }}
-                  onRemove={() => props.onToggleDocument(false)}
-                />
-              </WrapItem>
-            )}
-            {props.mentionClipboard && (
-              <WrapItem>
-                <SectionPill
-                  section={{ id: "__clip__", title: "Clipboard", content: "", from: 0, to: 0 }}
-                  onRemove={() => props.onToggleClipboard(false)}
-                />
-              </WrapItem>
-            )}
-          </Wrap>
+          <Box
+            mb={1.5}
+            borderBottomWidth="1px"
+            borderColor={{ _light: "blackAlpha.80", _dark: "whiteAlpha.80" }}
+            pb={1.5}
+          >
+            <Flex align="center" gap={1} minW={0}>
+              {/* Pills zone — single line (clipped) or wrapped */}
+              <Box
+                flex={1}
+                minW={0}
+                overflow={pillsExpanded ? "visible" : "hidden"}
+              >
+                <Flex
+                  gap={1}
+                  flexWrap={pillsExpanded ? "wrap" : "nowrap"}
+                  align="center"
+                >
+                  {allPills.map((p) => (
+                    <SectionPill
+                      key={p.id}
+                      section={{
+                        id: p.id,
+                        title: p.label,
+                        content: "",
+                        from: 0,
+                        to: 0,
+                      }}
+                      onRemove={p.onRemove}
+                    />
+                  ))}
+                </Flex>
+              </Box>
+
+              {/* Right: count + expand/collapse toggle */}
+              <HStack gap={0.5} flexShrink={0} align="center">
+                <Text
+                  fontSize="10px"
+                  fontWeight="medium"
+                  color={{ _light: "gray.500", _dark: "gray.400" }}
+                  whiteSpace="nowrap"
+                >
+                  {contextCount} {contextCount === 1 ? "item" : "items"}
+                </Text>
+                <IconButton
+                  aria-label={pillsExpanded ? "Collapse context" : "Expand context"}
+                  size="xs"
+                  variant="ghost"
+                  minW="20px"
+                  h="20px"
+                  color="fg.muted"
+                  onClick={() => setPillsExpanded((v) => !v)}
+                >
+                  {pillsExpanded
+                    ? <ChevronUp size={12} strokeWidth={2} />
+                    : <ChevronDown size={12} strokeWidth={2} />
+                  }
+                </IconButton>
+              </HStack>
+            </Flex>
+          </Box>
         )}
+
         <Textarea
           ref={ta}
           focusRing="none"
@@ -142,25 +196,48 @@ export function ChatInput(props: {
             _placeholder: { color: "var(--chakra-colors-fg-muted)" },
           }}
         />
-        <HStack justify="flex-end" align="center" gap={0} mt={1} pt={1} borderTopWidth="1px" borderColor="border.muted">
-          <IconButton aria-label="Attach image (coming soon)" size="xs" variant="ghost" disabled opacity={0.4}>
-            <ImageIcon size={16} strokeWidth={1.75} />
-          </IconButton>
-          <IconButton aria-label="Voice input (coming soon)" size="xs" variant="ghost" disabled opacity={0.4}>
-            <Mic size={16} strokeWidth={1.75} />
-          </IconButton>
-          <IconButton
-            aria-label="Send"
-            size="xs"
-            variant="solid"
-            colorPalette="blue"
-            borderRadius="full"
-            disabled={props.disabled || !text.trim()}
-            onClick={send}
-            ml={0.5}
-          >
-            <Send size={14} strokeWidth={2} />
-          </IconButton>
+
+        <HStack
+          justify="space-between"
+          align="center"
+          gap={0}
+          mt={1}
+          pt={1.5}
+          borderTopWidth="1px"
+          borderColor="border.muted"
+          minH="22px"
+        >
+          <HStack gap={0}>
+            <IconButton
+              aria-label="Clear chat"
+              size="xs"
+              variant="ghost"
+              minW="20px"
+              h="20px"
+              disabled={props.busy}
+              onClick={props.onClearChat}
+            >
+              <Trash2 size={12} strokeWidth={1.75} />
+            </IconButton>
+          </HStack>
+          <HStack gap={1.5} align="center">
+            {props.busy && <Spinner size="xs" color="fg.muted" />}
+            <IconButton
+              aria-label="Send"
+              size="xs"
+              variant="ghost"
+              borderRadius="md"
+              minW="20px"
+              h="20px"
+              disabled={props.disabled || !text.trim()}
+              onClick={send}
+              color="fg.muted"
+              _hover={{ color: "fg", bg: "transparent" }}
+              _disabled={{ opacity: 0.3 }}
+            >
+              <Send size={12} strokeWidth={1.75} />
+            </IconButton>
+          </HStack>
         </HStack>
       </Box>
     </Box>

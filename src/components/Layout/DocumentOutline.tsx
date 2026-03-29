@@ -1,5 +1,6 @@
-import { Box, IconButton, Text, VStack } from "@chakra-ui/react";
-import { Plus } from "lucide-react";
+import { useState } from "react";
+import { Box, IconButton, Text, VStack, HStack } from "@chakra-ui/react";
+import { Plus, ChevronDown, ChevronRight } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { OutlineNode } from "@/services/sectionService";
@@ -115,33 +116,79 @@ export function DocumentOutline(props: {
   onPick: (from: number, title: string) => void;
   onAddToChat: (from: number, title: string) => void;
 }) {
+  const [open, setOpen] = useState(true);
+
   if (props.tree.length === 0) {
     return (
-      <Text fontSize="xs" color="fg.muted" px={3} py={2}>
-        No headings
-      </Text>
+      <Box
+        flex="1"
+        minH={0}
+        display="flex"
+        flexDirection="column"
+        borderRightWidth="1px"
+        borderColor={{ _light: "blackAlpha.80", _dark: "whiteAlpha.60" }}
+        py={2}
+      >
+        <HStack px={3} py={1} justify="space-between" align="center">
+          <Text fontSize="xs" fontWeight="semibold" color="fg.muted" letterSpacing="tight">
+            Outline
+          </Text>
+          <IconButton
+            aria-label={open ? "Collapse outline" : "Expand outline"}
+            size="xs"
+            variant="ghost"
+            minW="24px"
+            h="24px"
+            onClick={() => setOpen((o) => !o)}
+          >
+            {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </IconButton>
+        </HStack>
+        {open ? (
+          <Text fontSize="xs" color="fg.muted" px={3} py={1}>
+            No headings
+          </Text>
+        ) : null}
+      </Box>
     );
   }
   return (
     <VStack
       align="stretch"
       gap={0}
-      maxH="200px"
-      overflowY="auto"
-      borderBottomWidth="1px"
+      flex="1"
+      minH={0}
+      overflow="hidden"
+      borderRightWidth="1px"
       borderColor={{ _light: "blackAlpha.80", _dark: "whiteAlpha.60" }}
       py={2}
     >
-      <Text fontSize="xs" fontWeight="semibold" color="fg.muted" px={3} mb={1} letterSpacing="tight">
-        Outline
-      </Text>
-      <OutlineItems
-        nodes={props.tree}
-        depth={0}
-        activeFrom={props.activeFrom}
-        onPick={props.onPick}
-        onAddToChat={props.onAddToChat}
-      />
+      <HStack px={3} mb={1} justify="space-between" align="center">
+        <Text fontSize="xs" fontWeight="semibold" color="fg.muted" letterSpacing="tight">
+          Outline
+        </Text>
+        <IconButton
+          aria-label={open ? "Collapse outline" : "Expand outline"}
+          size="xs"
+          variant="ghost"
+          minW="24px"
+          h="24px"
+          onClick={() => setOpen((o) => !o)}
+        >
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </IconButton>
+      </HStack>
+      {open ? (
+        <VStack align="stretch" gap={0} flex="1" minH={0} overflowY="auto">
+          <OutlineItems
+            nodes={props.tree}
+            depth={0}
+            activeFrom={props.activeFrom}
+            onPick={props.onPick}
+            onAddToChat={props.onAddToChat}
+          />
+        </VStack>
+      ) : null}
     </VStack>
   );
 }

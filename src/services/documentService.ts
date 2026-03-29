@@ -13,6 +13,10 @@ export async function saveFileDialog(defaultPath?: string): Promise<string | nul
   return api().dialogSave(defaultPath);
 }
 
+export async function openDirectoryDialog(): Promise<string | null> {
+  return api().dialogOpenDirectory();
+}
+
 export async function readTextFile(path: string): Promise<string> {
   const r = await api().readFile(path);
   if (!r.ok) throw new Error(r.error);
