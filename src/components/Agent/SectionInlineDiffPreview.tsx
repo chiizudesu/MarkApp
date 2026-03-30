@@ -1,4 +1,4 @@
-import { Box, Flex, Text } from "@chakra-ui/react";
+import { Box, Flex, Spinner, Text } from "@chakra-ui/react";
 import * as ScrollArea from "@radix-ui/react-scroll-area";
 import DiffMatchPatch from "diff-match-patch";
 import { AlignLeft } from "lucide-react";
@@ -30,6 +30,8 @@ export function SectionInlineDiffPreview(props: {
   title: string;
   oldText: string;
   newText: string;
+  /** Show spinner in header while the model is still writing the draft */
+  isGenerating?: boolean;
 }) {
   const stats = useMemo(
     () => diffLineStats(props.oldText, props.newText),
@@ -41,6 +43,7 @@ export function SectionInlineDiffPreview(props: {
   const paneBg = useColorModeValue("#f1f5f9", "#1a202c");
   const headerBorder = useColorModeValue("blackAlpha.100", "whiteAlpha.100");
   const titleColor = useColorModeValue("#334155", "white");
+  const generating = Boolean(props.isGenerating);
 
   return (
     <Box
@@ -49,6 +52,7 @@ export function SectionInlineDiffPreview(props: {
       borderColor={{ _light: "blackAlpha.200", _dark: "whiteAlpha.200" }}
       overflow="hidden"
       bg={paneBg}
+      aria-busy={generating}
     >
       <Flex
         align="center"
@@ -58,8 +62,12 @@ export function SectionInlineDiffPreview(props: {
         borderBottomWidth="1px"
         borderColor={headerBorder}
       >
-        <Box as="span" color="blue.400" display="flex" css={{ flexShrink: 0 }}>
-          <AlignLeft size={12} strokeWidth={2} aria-hidden />
+        <Box as="span" color="blue.400" display="flex" css={{ flexShrink: 0 }} aria-hidden>
+          {generating ? (
+            <Spinner size="xs" color="blue.400" />
+          ) : (
+            <AlignLeft size={12} strokeWidth={2} />
+          )}
         </Box>
         <Text
           fontSize="11px"

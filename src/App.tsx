@@ -48,12 +48,13 @@ import type { MessageParam } from "@anthropic-ai/sdk/resources";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatMessage, SectionRef } from "@/types/agent";
-import { stripOuterMarkdownCodeFence } from "@/utils/markdownFence";
+import { normalizeAssistantMarkdownParagraphs, stripOuterMarkdownCodeFence } from "@/utils/markdownFence";
 import {
   MARKAPP_DEFAULT_STARTER_DOC,
   isEffectivelyBlankDocument,
   wantsApplyPriorReplyToDoc,
   lastAssistantDraft,
+  looksLikeAssistantDocumentDraft,
 } from "@/utils/editorDocContext";
 
 function docTitle(path: string | null) {
@@ -138,6 +139,68 @@ export function App() {
   const sections = outlineFromEditor ?? getSectionsFromText(doc);
   const outline = useMemo(() => buildOutline(sections.filter((s) => s.level > 0)), [sections]);
   const allSectionRefs = useMemo(() => sections.filter((s) => s.level > 0).map(sectionToRef), [sections]);
+
+  /** Inline AI diff UI on the sheet (highlight + Keep / Undo), same proposal as the agent chat. */
+  const editorProposalInline = useMemo(() => {
+    const documentIsBlank = isEffectivelyBlankDocument(doc);
+
+    // Helper: find a section's from/to by heading offset (preferred) or title (fallback).
+    // Returns [-1,-1] to mean "whole document".
+    // After an AI edit, the section may be split by added sub-headings, so we walk forward
+    // to the next section at the SAME OR HIGHER heading level to get the true span.
+    const sectionRange = (
+      title: string,
+      storedFrom?: number,
+    ): { sectionFrom: number; sectionTo: number } => {
+      if (title === "Document") return { sectionFrom: -1, sectionTo: -1 };
+
+      // Prefer the stored offset (stable across edits) over a title search.
+      const startSec =
+        storedFrom !== undefined
+          ? sections.find((s) => s.level > 0 && s.from === storedFrom)
+          : sections.find((s) => s.level > 0 && s.title === title);
+
+      if (!startSec) return { sectionFrom: -1, sectionTo: -1 };
+
+      // Find the next section at the same or higher level (lower level number = higher heading).
+      // This spans across any sub-headings the AI may have added inside the block.
+      const nextPeer = sections.find(
+        (s) => s.level > 0 && s.level <= startSec.level && s.from > startSec.from,
+      );
+      return {
+        sectionFrom: startSec.from,
+        sectionTo: nextPeer ? nextPeer.from : -1,
+      };
+    };
+
+    // Show streaming overlay only when we know a sectionProposal will be created:
+    // exactly one pinned section, or the document is blank. The "wholeDocNoPins" case
+    // (no pins, non-blank doc) is excluded here because we can't know until streaming ends
+    // whether the output will qualify as a document draft — showing the overlay for every
+    // ordinary chat reply would be a false positive.
+    if (agentBusy && streamingText && (contextSections.length === 1 || documentIsBlank)) {
+      const title = documentIsBlank ? "Document" : contextSections[0]!.title;
+      const range = contextSections.length === 1
+        ? { sectionFrom: contextSections[0]!.from, sectionTo: contextSections[0]!.to }
+        : { sectionFrom: -1, sectionTo: -1 };
+      return { state: "streaming" as const, sectionTitle: title, ...range };
+    }
+
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === "assistant" && m.sectionProposal && m.sectionProposal.accepted === undefined) {
+        const p = m.sectionProposal;
+        const title = p.sectionTitle ?? "Section";
+        return {
+          state: "pending" as const,
+          sectionTitle: title,
+          messageId: m.id,
+          ...sectionRange(title, p.sectionMarkdownFrom),
+        };
+      }
+    }
+    return null;
+  }, [agentBusy, streamingText, doc, contextSections, messages, sections]);
 
   const wordCount = useMemo(() => doc.trim().split(/\s+/).filter(Boolean).length, [doc]);
   const sectionCount = useMemo(() => sections.filter((s) => s.level > 0).length, [sections]);
@@ -377,23 +440,37 @@ export function App() {
     setDirty(true);
   };
 
-  const applySectionReplacementToEditor = useCallback((oldText: string, newText: string) => {
-    const handle = editorRef.current;
-    if (!handle) return;
-    const current = handle.getMarkdown();
-    let nextMd: string;
-    if (isEffectivelyBlankDocument(current) || oldText === "") {
-      // Blank or placeholder document — insert the whole response directly
-      nextMd = newText;
-    } else if (newText.includes("# ")) {
-      nextMd = newText;
-    } else {
-      nextMd = current.replace(oldText, newText);
-    }
-    handle.setMarkdown(nextMd);
-    setDoc(handle.getMarkdown());
-    setDirty(true);
-  }, []);
+  const applySectionReplacementToEditor = useCallback(
+    (oldText: string, newText: string, opts?: { normalizeReplacement?: boolean }) => {
+      const normalizeReplacement = opts?.normalizeReplacement !== false;
+      const replacement = normalizeReplacement ? normalizeAssistantMarkdownParagraphs(newText) : newText;
+      const handle = editorRef.current;
+      if (!handle) return;
+      const current = handle.getMarkdown();
+      let nextMd: string;
+      if (isEffectivelyBlankDocument(current) || oldText === "") {
+        // Blank or placeholder document — insert the whole response directly
+        nextMd = replacement;
+      } else {
+        const replaced = current.replace(oldText, replacement);
+        if (replaced !== current) {
+          // Exact section match found — use the surgical replace
+          nextMd = replaced;
+        } else if (oldText.length > current.length * 0.6) {
+          // oldText was most of the document, so a whole-doc replacement was intended
+          nextMd = replacement;
+        } else {
+          // Section text not found in the current document (stale snapshot, user edited
+          // while streaming, etc.) — do nothing rather than silently overwrite.
+          return;
+        }
+      }
+      handle.setMarkdown(nextMd);
+      setDoc(handle.getMarkdown());
+      setDirty(true);
+    },
+    [],
+  );
 
   const acceptProposal = useCallback((msgId: string) => {
     setMessages((prev) =>
@@ -408,7 +485,9 @@ export function App() {
   const revertProposal = useCallback((msgId: string) => {
     const msg = messages.find((m) => m.id === msgId);
     if (!msg?.sectionProposal) return;
-    applySectionReplacementToEditor(msg.sectionProposal.newText, msg.sectionProposal.oldText);
+    applySectionReplacementToEditor(msg.sectionProposal.newText, msg.sectionProposal.oldText, {
+      normalizeReplacement: false,
+    });
     setMessages((prev) =>
       prev.map((m) =>
         m.id === msgId && m.sectionProposal
@@ -430,6 +509,16 @@ export function App() {
   };
 
   const sendAgentMessage = async (text: string) => {
+    // Auto-accept any undecided proposal before starting a new turn so history stays linear
+    // and revert of an older proposal can't corrupt a newer edit.
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.sectionProposal && m.sectionProposal.accepted === undefined
+          ? { ...m, sectionProposal: { ...m.sectionProposal, accepted: true } }
+          : m,
+      ),
+    );
+
     let clip: string | null = null;
     if (mentionClipboard) {
       try {
@@ -500,14 +589,25 @@ export function App() {
         },
       );
 
-      const cleaned = stripOuterMarkdownCodeFence(full);
+      const cleaned = normalizeAssistantMarkdownParagraphs(stripOuterMarkdownCodeFence(full));
       const blankish = isEffectivelyBlankDocument(doc);
+      const baselineMarkdown = editorRef.current?.getMarkdown() ?? doc;
+      const wholeDocUnpinned =
+        contextSections.length === 0 &&
+        !blankish &&
+        looksLikeAssistantDocumentDraft(cleaned);
       const sectionProposal =
-        cleaned && (contextSections.length === 1 || blankish)
+        cleaned && (contextSections.length === 1 || blankish || wholeDocUnpinned)
           ? {
-              oldText: blankish ? "" : contextSections[0].content,
+              oldText:
+                blankish ? "" : contextSections.length === 1 ? contextSections[0].content : baselineMarkdown,
               newText: cleaned,
-              sectionTitle: blankish ? "Document" : contextSections[0].title,
+              sectionTitle:
+                blankish ? "Document" : contextSections.length === 1 ? contextSections[0].title : "Document",
+              // Store the heading's markdown offset so the editor overlay can find the true
+              // post-edit span even when the AI adds sub-headings that split the section.
+              sectionMarkdownFrom:
+                contextSections.length === 1 ? contextSections[0].from : undefined,
             }
           : undefined;
 
@@ -563,7 +663,7 @@ export function App() {
       await streamSectionReplace(sec.content, instruction, (c) => {
         out += c;
       });
-      const cleaned = stripOuterMarkdownCodeFence(out.trim());
+      const cleaned = normalizeAssistantMarkdownParagraphs(stripOuterMarkdownCodeFence(out.trim()));
       applySectionReplacementToEditor(sec.content, cleaned);
     } catch (e) {
       toaster.create({
@@ -919,7 +1019,12 @@ export function App() {
                 onOpenRecent={(p) => void loadPathIntoEditor(p)}
               />
             ) : previewMode ? (
-              <Box flex="1" overflow="auto" p={4} className="md-prose md-prose-chat">
+              <Box
+                flex="1"
+                overflow="auto"
+                p={4}
+                className={`md-prose md-prose-chat ${isDark ? "markapp-dark" : "markapp-light"}`}
+              >
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{doc}</ReactMarkdown>
               </Box>
             ) : (
@@ -938,9 +1043,12 @@ export function App() {
                   onAddSectionToAgent={addSectionRefToAgent}
                   onAddSelectionToAgent={addSectionRefToAgent}
                   sectionHoverHighlight={sectionHoverHighlight}
-                  activeSectionMarkdownFrom={activeSectionFrom}
+                  activeSectionMarkdownFrom={editorProposalInline ? null : activeSectionFrom}
                   onOutlineSectionsChange={setOutlineFromEditor}
                   outlineBootGeneration={editorKey}
+                  proposalInline={editorProposalInline ?? undefined}
+                  onProposalAccept={acceptProposal}
+                  onProposalRevert={revertProposal}
                 />
               </Box>
             )}
@@ -1017,6 +1125,8 @@ export function App() {
                 <AgentPanel
                   messages={messages}
                   streamingText={streamingText}
+                  documentIsBlank={isEffectivelyBlankDocument(doc)}
+                  documentMarkdown={doc}
                   contextSections={contextSections}
                   onRemoveContext={(id) => {
                     setContextSections((s) => s.filter((x) => x.id !== id));

@@ -9,6 +9,12 @@ export interface ChatMessage {
     oldText: string;
     newText: string;
     sectionTitle?: string;
+    /**
+     * Markdown `from` offset of the section heading at the time the proposal was created.
+     * Stored so the editor overlay can later find the full new span (the section's `to` may
+     * shrink if the AI adds sub-headings, so we walk to the next peer-level heading instead).
+     */
+    sectionMarkdownFrom?: number;
     /** AI-generated bullet points (≤5) summarising what changed. Populated async after streaming. */
     summary?: string[];
     /** Whether the user accepted (true), reverted (false), or hasn't decided yet (undefined). */

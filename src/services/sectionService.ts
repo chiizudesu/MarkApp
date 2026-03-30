@@ -479,6 +479,38 @@ export function getSectionAtPos(sections: DocSection[], pos: number): DocSection
   return sections.length ? sections[sections.length - 1] : null;
 }
 
+function normOutlineTitleKey(s: string): string {
+  return s.replace(OUTLINE_BLANK_STRIP, "").trim().toLowerCase();
+}
+
+/**
+ * Map a top-level editor block to its outline section. Prefer this over {@link getSectionAtPos} when
+ * `blockStartOffset` comes from Plate serialization: it can drift a few characters from line-based
+ * `DocSection.from`, so the offset may still fall in the *previous* section for heading blocks.
+ * Heading blocks are matched by normalized title; duplicate titles fall back to nearest `from` in a small window.
+ */
+export function getSectionForEditorBlock(
+  sections: DocSection[],
+  blockStartOffset: number,
+  block: { type?: string } | undefined,
+  headingPlainText: string,
+): DocSection | null {
+  const hl = headingLevelFromType(block?.type);
+  if (hl > 0 && headingPlainText.replace(OUTLINE_BLANK_STRIP, "").trim().length > 0) {
+    const ht = normOutlineTitleKey(headingPlainText);
+    const candidates = sections.filter((s) => s.level > 0 && normOutlineTitleKey(s.title) === ht);
+    if (candidates.length === 1) return candidates[0]!;
+    if (candidates.length > 1) {
+      const windowed = candidates.filter(
+        (s) => blockStartOffset >= s.from - 12 && blockStartOffset < s.to + 12,
+      );
+      windowed.sort((a, b) => Math.abs(blockStartOffset - a.from) - Math.abs(blockStartOffset - b.from));
+      if (windowed[0]) return windowed[0]!;
+    }
+  }
+  return getSectionAtPos(sections, blockStartOffset);
+}
+
 /**
  * Score sections by keyword overlap with a query string.
  * Returns the top N sections by score (ignoring sections with score 0).
@@ -527,13 +559,16 @@ export function findRelevantSections(
   return scored.map((x) => x.section);
 }
 
+/** Match trailing trim: prefix-serialization `blockStarts` vs line-based `DocSection.from` can skew slightly. */
+const SECTION_TRIM_MD_SLACK = 4;
+
 /**
- * Trim a block span so it doesn't bleed into the next section.
+ * Trim a block span so it doesn't bleed into adjacent sections.
  *
  * `blockStarts` comes from prefix serialization while `docSections` uses full-doc offsets.
- * The two offset systems can drift by 1-2 chars, causing `topLevelBlocksIntersectingMarkdownRange`
- * to include the first block of the next section. This function removes trailing blocks that are
- * structurally the start of a different section (ATX heading, or offset-close to another section's `from`).
+ * The two offset systems can drift by a few chars: overlap logic may include the **last** block of
+ * the previous section (leading false positive) or the **first** block of the next section (trailing).
+ * This removes those blocks; see {@link SECTION_TRIM_MD_SLACK}.
  */
 export function trimBlockSpanToSection(
   b0: number,
@@ -543,6 +578,20 @@ export function trimBlockSpanToSection(
   sec: DocSection,
   allSections: DocSection[],
 ): [number, number] {
+  // Drop leading blocks before `sec.from`, including when drift makes the block "end" just past `sec.from`.
+  while (b0 < b1) {
+    const start = blockStarts[b0] ?? 0;
+    const end = blockStarts[b0 + 1] ?? 0;
+    if (end <= sec.from) {
+      b0++;
+      continue;
+    }
+    if (start < sec.from && end <= sec.from + SECTION_TRIM_MD_SLACK) {
+      b0++;
+      continue;
+    }
+    break;
+  }
   while (b1 > b0) {
     if (headingLevelFromType(blocks[b1]?.type) > 0) {
       b1--;
@@ -550,7 +599,7 @@ export function trimBlockSpanToSection(
     }
     const bOff = blockStarts[b1] ?? 0;
     const isOtherSectionStart = allSections.some(
-      (s) => s.from !== sec.from && s.level > 0 && Math.abs(s.from - bOff) <= 4,
+      (s) => s.from !== sec.from && s.level > 0 && Math.abs(s.from - bOff) <= SECTION_TRIM_MD_SLACK,
     );
     if (isOtherSectionStart) {
       b1--;

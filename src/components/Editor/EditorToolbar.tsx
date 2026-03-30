@@ -734,12 +734,12 @@ export function EditorToolbar({
         <HStack gap={1} flexShrink={0} align="center" h="38px">
           <TBarTip
             label={sectionHoverHighlight
-              ? "Section hover highlight on — click to hide"
-              : "Section hover highlight off — click to show"
+              ? "Section highlights on (hover + outline selection) — click to hide"
+              : "Section highlights off — click to show"
             }
           >
             <IconButton
-              aria-label={sectionHoverHighlight ? "Turn off section hover highlight" : "Turn on section hover highlight"}
+              aria-label={sectionHoverHighlight ? "Turn off section highlights" : "Turn on section highlights"}
               size="xs"
               variant={sectionHoverHighlight ? "subtle" : "ghost"}
               colorPalette="purple"

@@ -279,7 +279,9 @@
   font-style: italic;
 }
 
-.markapp-light .md-prose code {
+/* Same-element (.markapp-*.md-prose) and nested (.markapp-* .md-prose) wrappers */
+.markapp-light .md-prose code,
+.markapp-light.md-prose code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.88em;
   padding: 0.12em 0.4em;
@@ -287,7 +289,8 @@
   background: var(--markapp-code-bg);
 }
 
-.markapp-dark .md-prose code {
+.markapp-dark .md-prose code,
+.markapp-dark.md-prose code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.88em;
   padding: 0.12em 0.4em;
@@ -295,8 +298,8 @@
   background: var(--markapp-code-bg);
 }
 
-/* Agent chat bubbles (no markapp-* wrapper): neutral code background */
-.md-prose-chat code {
+/* Chat / prose without markapp vars: neutral inline code */
+.md-prose-chat:not(.markapp-light):not(.markapp-dark) code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.88em;
   padding: 0.12em 0.4em;
@@ -307,18 +310,26 @@
 .md-prose pre {
   margin: 0.65em 0;
   padding: 0.75em 1em;
-  border-radius: 8px;
+  border-radius: 6px;
   overflow-x: auto;
   font-size: 0.82em;
   line-height: 1.45;
 }
 
-.markapp-light .md-prose pre {
+.markapp-light .md-prose pre,
+.markapp-light.md-prose pre {
   background: var(--markapp-code-bg);
+  color: var(--markapp-fg);
 }
 
-.markapp-dark .md-prose pre {
+.markapp-dark .md-prose pre,
+.markapp-dark.md-prose pre {
   background: var(--markapp-code-bg);
+  color: var(--markapp-fg);
+}
+
+.md-prose-chat:not(.markapp-light):not(.markapp-dark) pre {
+  background: rgba(128, 128, 128, 0.18);
 }
 
 .md-prose pre code {
@@ -327,11 +338,13 @@
   background: transparent !important;
 }
 
+/* Matches Plate blockquote (accent bar, muted italic) when --markapp-* inherit */
 .md-prose blockquote {
-  margin: 0.6em 0;
-  padding-left: 0.85em;
-  border-left: 3px solid var(--markapp-border, rgba(128, 128, 128, 0.45));
-  opacity: 0.92;
+  margin: 0.5em 0;
+  padding-left: 1em;
+  border-left: 3px solid var(--markapp-accent, #3b82f6);
+  color: var(--markapp-muted, inherit);
+  font-style: italic;
 }
 
 .md-prose a {

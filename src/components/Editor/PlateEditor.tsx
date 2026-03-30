@@ -11,8 +11,9 @@ import type { Value } from "platejs";
 import { Range as SlateRange } from "slate";
 import { MarkdownPlugin } from "@platejs/markdown";
 import { Plate, PlateContent, usePlateEditor } from "platejs/react";
-import { Menu, Portal, Box, IconButton } from "@chakra-ui/react";
+import { Menu, Portal, Box, IconButton, Flex, Text, HStack, Spinner, Button } from "@chakra-ui/react";
 import { Sparkles } from "lucide-react";
+import { modShiftShortcut } from "@/utils/platform";
 import { insertImageFromFiles } from "@platejs/media";
 import { editorPlugins } from "./platePlugins";
 import { bumpEditorFontSize } from "@/utils/editorFontSize";
@@ -20,6 +21,7 @@ import {
   collectBoldOnlyParagraphHints,
   getSectionBlockIndexRangeForTopLevelIndex,
   getSectionAtPos,
+  getSectionForEditorBlock,
   getSectionsFromTextWithBoldBlockHints,
   headingLevelFromType,
   topLevelBlocksIntersectingMarkdownRange,
@@ -31,6 +33,7 @@ import type { SectionRef } from "@/types/agent";
 
 /** Hit slop outside the purple outline (~20px requested; ≥22 so the sparkle, offset 22px, stays inside the zone). */
 const SECTION_HOVER_OUTSIDE_PX = 22;
+
 
 export type PlateEditorHandle = {
   getEditor: () => ReturnType<typeof usePlateEditor> | null;
@@ -79,6 +82,20 @@ type Props = {
    * Plate may not emit `onValueChange` before first interaction; we sync outline once when this changes.
    */
   outlineBootGeneration?: number;
+  /**
+   * Cursor-style inline diff: highlight changed blocks + floating Keep/Undo (same as agent chat).
+   * sectionFrom/sectionTo are the markdown offsets of the changed region (from the live sections list).
+   * When both are -1 it means the whole document.
+   */
+  proposalInline?: {
+    state: "streaming" | "pending";
+    sectionTitle: string;
+    messageId?: string;
+    sectionFrom: number;
+    sectionTo: number;
+  };
+  onProposalAccept?: (messageId: string) => void;
+  onProposalRevert?: (messageId: string) => void;
 };
 
 export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEditor(
@@ -94,6 +111,9 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
     activeSectionMarkdownFrom = null,
     onOutlineSectionsChange,
     outlineBootGeneration = 0,
+    proposalInline,
+    onProposalAccept,
+    onProposalRevert,
   },
   ref,
 ) {
@@ -132,6 +152,12 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
   }, [hoverSectionBlocks]);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
   const [editorZoom, setEditorZoom] = useState(1);
+  const [proposalLayout, setProposalLayout] = useState<{
+    top: number;
+    left: number;
+    width: number;
+    height: number;
+  } | null>(null);
 
   const editor = usePlateEditor({
     plugins: editorPlugins,
@@ -181,7 +207,10 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
         const nBlocks = children.length;
         const idx = Math.min(Math.max(0, blockIndex), Math.max(0, nBlocks - 1));
         const blockStartOffset = nBlocks === 0 ? 0 : starts[idx] ?? 0;
-        const sec = getSectionAtPos(docSections, blockStartOffset);
+        const node = children[idx] as { type?: string };
+        const headingText =
+          headingLevelFromType(node?.type) > 0 ? editor.api.string(node as any) : "";
+        const sec = getSectionForEditorBlock(docSections, blockStartOffset, node, headingText);
         if (sec) {
           const span = topLevelBlocksIntersectingMarkdownRange(starts, sec.from, sec.to);
           if (span) {
@@ -306,6 +335,53 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
     layoutRegionForBlockRange,
   ]);
 
+  useLayoutEffect(() => {
+    if (!proposalInline) {
+      setProposalLayout(null);
+      return;
+    }
+    try {
+      const { starts } = getMarkdownBlockStarts();
+      const { sectionFrom, sectionTo } = proposalInline;
+      // sectionFrom === -1 means whole document
+      const from = sectionFrom === -1 ? 0 : sectionFrom;
+      const to = sectionTo === -1 ? (starts[starts.length - 1] ?? 0) : sectionTo;
+      if (to <= from) {
+        setProposalLayout(null);
+        return;
+      }
+      const span = topLevelBlocksIntersectingMarkdownRange(starts, from, to);
+      if (!span) {
+        setProposalLayout(null);
+        return;
+      }
+      const [b0, b1] = span;
+      const reg = layoutRegionForBlockRange(b0, b1, 4);
+      setProposalLayout(reg);
+    } catch {
+      setProposalLayout(null);
+    }
+  }, [proposalInline, editor.children, getMarkdownBlockStarts, layoutRegionForBlockRange]);
+
+  useEffect(() => {
+    if (!proposalInline || proposalInline.state !== "pending" || !proposalInline.messageId) return;
+    const mid = proposalInline.messageId;
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod || !e.shiftKey) return;
+      if (e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        onProposalAccept?.(mid);
+      }
+      if (e.key.toLowerCase() === "r") {
+        e.preventDefault();
+        onProposalRevert?.(mid);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [proposalInline, onProposalAccept, onProposalRevert]);
+
   useImperativeHandle(
     ref,
     () => ({
@@ -356,7 +432,10 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
           const nBlocks = (editor.children as Value).length;
           const idx = Math.min(Math.max(0, blockIndex), Math.max(0, nBlocks - 1));
           const blockStartOffset = nBlocks === 0 ? 0 : starts[idx] ?? 0;
-          const sec = getSectionAtPos(docSections, blockStartOffset);
+          const node = children[idx] as { type?: string };
+          const headingText =
+            headingLevelFromType(node?.type) > 0 ? editor.api.string(node as any) : "";
+          const sec = getSectionForEditorBlock(docSections, blockStartOffset, node, headingText);
           if (!sec || sec.level <= 0) return null;
           return { from: sec.from, title: sec.title };
         } catch {
@@ -376,7 +455,14 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
           if (!sec) return;
           const blocksSpan = topLevelBlocksIntersectingMarkdownRange(starts, sec.from, sec.to);
           if (!blocksSpan) return;
-          const [b0] = blocksSpan;
+          const [b0] = trimBlockSpanToSection(
+            blocksSpan[0],
+            blocksSpan[1],
+            children as Array<{ type?: string }>,
+            starts,
+            sec,
+            docSections,
+          );
           const startPoint = editor.api.start([b0]);
           if (!startPoint) return;
           editor.tf.select({ anchor: startPoint, focus: startPoint });
@@ -686,8 +772,9 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
   }, [getSelectionMarkdown, onAddSelectionToAgent]);
 
   const runAddHoveredSection = useCallback(() => {
+    if (!sectionHoverHighlight) return;
     const showHover =
-      sectionHoverHighlight && mouseInEditorChrome && hoverSectionBlocks !== null;
+      mouseInEditorChrome && hoverSectionBlocks !== null;
     const hb = showHover ? hoverSectionBlocks : pinnedSectionBlocks;
     if (!hb) return;
     const sec = liveSectionFromBlockRange(hb.b0, hb.b1);
@@ -785,6 +872,104 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
               /* Scales the whole “sheet” + Slate surface (Word-style); desk bg outside is untouched. */
               style={{ zoom: editorZoom }}
             >
+              {proposalInline && proposalLayout ? (
+                <>
+                  <Box
+                    position="absolute"
+                    left={`${proposalLayout.left - 5}px`}
+                    top={`${proposalLayout.top}px`}
+                    w="3px"
+                    h={`${proposalLayout.height}px`}
+                    bg="green.500"
+                    borderRadius="sm"
+                    pointerEvents="none"
+                    zIndex={4}
+                  />
+                  <Box
+                    position="absolute"
+                    top={`${proposalLayout.top}px`}
+                    left={`${proposalLayout.left}px`}
+                    w={`${proposalLayout.width}px`}
+                    h={`${proposalLayout.height}px`}
+                    borderRadius="md"
+                    borderWidth="1px"
+                    borderColor="rgba(34, 197, 94, 0.45)"
+                    bg="rgba(34, 197, 94, 0.12)"
+                    pointerEvents="none"
+                    zIndex={3}
+                  />
+                  <Flex
+                    position="absolute"
+                    top={`${proposalLayout.top + proposalLayout.height + 8}px`}
+                    left={`${proposalLayout.left}px`}
+                    zIndex={5}
+                    align="center"
+                    gap={0}
+                    borderRadius="md"
+                    overflow="hidden"
+                    borderWidth="1px"
+                    borderColor="rgba(255,255,255,0.12)"
+                    bg="#2c2c30"
+                    boxShadow="0 4px 24px rgba(0,0,0,0.35)"
+                    pointerEvents="auto"
+                    onMouseDown={(e) => e.preventDefault()}
+                  >
+                    {proposalInline.state === "streaming" ? (
+                      <HStack px={3} py={2} gap={2}>
+                        <Spinner size="sm" color="blue.300" />
+                        <Text fontSize="xs" color="whiteAlpha.900">
+                          Receiving…
+                        </Text>
+                        <Text fontSize="xs" color="whiteAlpha.600" truncate maxW="180px" title={proposalInline.sectionTitle}>
+                          {proposalInline.sectionTitle}
+                        </Text>
+                      </HStack>
+                    ) : proposalInline.messageId ? (
+                      <>
+                        <Button
+                          size="xs"
+                          h="30px"
+                          px={3}
+                          variant="ghost"
+                          color="whiteAlpha.900"
+                          borderRadius="0"
+                          _hover={{ bg: "whiteAlpha.100" }}
+                          onClick={() => onProposalRevert?.(proposalInline.messageId!)}
+                        >
+                          <HStack gap={2}>
+                            <Text fontSize="sm">
+                              Undo
+                            </Text>
+                            <Text fontSize="2xs" color="whiteAlpha.500">
+                              {modShiftShortcut("R")}
+                            </Text>
+                          </HStack>
+                        </Button>
+                        <Box w="1px" alignSelf="stretch" bg="whiteAlpha.200" my={1} flexShrink={0} />
+                        <Button
+                          size="xs"
+                          h="30px"
+                          px={3}
+                          borderRadius="0"
+                          bg="green.600"
+                          color="white"
+                          _hover={{ bg: "green.500" }}
+                          onClick={() => onProposalAccept?.(proposalInline.messageId!)}
+                        >
+                          <HStack gap={2}>
+                            <Text fontSize="sm" fontWeight="semibold">
+                              Keep
+                            </Text>
+                            <Text fontSize="2xs" color="whiteAlpha.800">
+                              {modShiftShortcut("Y")}
+                            </Text>
+                          </HStack>
+                        </Button>
+                      </>
+                    ) : null}
+                  </Flex>
+                </>
+              ) : null}
               {(() => {
                 const showHoverOutline =
                   sectionHoverHighlight && mouseInEditorChrome && hoverRegion !== null;
@@ -794,10 +979,9 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
                   hoverSectionBlocks.b0 === pinnedSectionBlocks.b0 &&
                   hoverSectionBlocks.b1 === pinnedSectionBlocks.b1;
 
-                // Pinned (selected) box — always shown when a section is active.
+                // Pinned (outline-selected) box — same toggle as hover; off hides both.
                 const showPinned =
-                  pinnedRegion != null &&
-                  (sectionHoverHighlight || activeSectionMarkdownFrom != null);
+                  pinnedRegion != null && sectionHoverHighlight;
                 // Hover box — shown when hovering a *different* section than the selected one.
                 const showHover = showHoverOutline && !hoverMatchesPinned && hoverRegion != null;
 

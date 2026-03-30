@@ -32,6 +32,19 @@ export function wantsApplyPriorReplyToDoc(userText: string): boolean {
 }
 
 /**
+ * Whether assistant output is substantive enough to treat as document markdown (vs. a short chat answer).
+ */
+export function looksLikeAssistantDocumentDraft(text: string): boolean {
+  const raw = stripOuterMarkdownCodeFence(text?.trim() ?? "");
+  if (raw.length < 120) return false;
+  const hasMdHeading = /^#{1,6}\s/m.test(raw);
+  const paraBlocks = raw.split(/\n{2,}/).filter(Boolean);
+  if (hasMdHeading || paraBlocks.length >= 2) return true;
+  if (raw.length > 320) return true;
+  return false;
+}
+
+/**
  * Best candidate assistant markdown to insert — skips short refusals, prefers real drafts
  * (headings, multiple paragraphs, or long prose).
  */
@@ -40,11 +53,7 @@ export function lastAssistantDraft(messages: ChatMessage[]): string | null {
     const m = messages[i];
     if (m.role !== "assistant") continue;
     const raw = stripOuterMarkdownCodeFence(m.content?.trim() ?? "");
-    if (raw.length < 120) continue;
-    const hasMdHeading = /^#{1,6}\s/m.test(raw);
-    const paraBlocks = raw.split(/\n{2,}/).filter(Boolean);
-    if (hasMdHeading || paraBlocks.length >= 2) return raw;
-    if (raw.length > 320) return raw;
+    if (looksLikeAssistantDocumentDraft(raw)) return raw;
   }
   return null;
 }

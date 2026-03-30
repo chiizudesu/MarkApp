@@ -2,11 +2,18 @@ import { Box, Flex } from "@chakra-ui/react";
 import { ChatMessageBubble } from "./ChatMessage";
 import { ChatInput } from "./ChatInput";
 import type { ChatMessage, SectionRef } from "@/types/agent";
-import { stripOuterMarkdownCodeFence } from "@/utils/markdownFence";
+import {
+  normalizeAssistantMarkdownParagraphs,
+  stripStreamingOuterMarkdownCodeFence,
+} from "@/utils/markdownFence";
 
 export function AgentPanel(props: {
   messages: ChatMessage[];
   streamingText: string;
+  /** When true, match finalized-message rules: stream as whole-document proposal even with 0 or many context sections */
+  documentIsBlank: boolean;
+  /** Current editor markdown — baseline for whole-doc streaming diff when no sections are pinned */
+  documentMarkdown: string;
   contextSections: SectionRef[];
   onRemoveContext: (id: string) => void;
   onAddSection: (s: SectionRef) => void;
@@ -22,12 +29,26 @@ export function AgentPanel(props: {
   onAcceptProposal: (msgId: string) => void;
   onRevertProposal: (msgId: string) => void;
 }) {
+  const wholeDocNoPins =
+    props.contextSections.length === 0 && !props.documentIsBlank;
   const streamingSectionProposal =
-    props.streamingText && props.contextSections.length === 1
+    props.streamingText &&
+    (props.contextSections.length === 1 || props.documentIsBlank || wholeDocNoPins)
       ? {
-          oldText: props.contextSections[0].content,
-          newText: stripOuterMarkdownCodeFence(props.streamingText),
-          sectionTitle: props.contextSections[0].title,
+          oldText: props.documentIsBlank
+            ? ""
+            : props.contextSections.length === 1
+              ? props.contextSections[0].content
+              : props.documentMarkdown,
+          newText: normalizeAssistantMarkdownParagraphs(
+            stripStreamingOuterMarkdownCodeFence(props.streamingText),
+          ),
+          sectionTitle:
+            props.documentIsBlank
+              ? "Document"
+              : props.contextSections.length === 1
+                ? props.contextSections[0].title
+                : "Document",
         }
       : undefined;
 

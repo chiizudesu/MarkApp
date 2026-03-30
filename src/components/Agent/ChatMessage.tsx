@@ -2,6 +2,7 @@ import { Box, Flex, Text, Spinner, List, IconButton, HStack } from "@chakra-ui/r
 import { Check, Undo2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useColorMode } from "@/components/ui/color-mode";
 import type { ChatMessage as Msg } from "@/types/agent";
 import { SectionInlineDiffPreview } from "./SectionInlineDiffPreview";
 import { stripOuterMarkdownCodeFence } from "@/utils/markdownFence";
@@ -19,6 +20,8 @@ export function ChatMessageBubble({
   onAccept?: (msgId: string) => void;
   onRevert?: (msgId: string) => void;
 }) {
+  const { colorMode } = useColorMode();
+  const markappSurface = colorMode === "dark" ? "markapp-dark" : "markapp-light";
   const isUser = message.role === "user";
   const proposal = message.sectionProposal;
 
@@ -46,11 +49,12 @@ export function ChatMessageBubble({
 
   // Assistant with diff proposal: preview + summary + accept/revert controls
   if (proposal) {
+    const isStreaming = message.id === "stream";
     const removed = lineCount(proposal.oldText);
     const added = lineCount(proposal.newText);
     const title = proposal.sectionTitle?.trim() || "section";
     const hasSummary = proposal.summary && proposal.summary.length > 0;
-    const summaryLoading = proposal.summary === undefined;
+    const summaryLoading = !isStreaming && proposal.summary === undefined;
     const isDecided = proposal.accepted !== undefined;
 
     return (
@@ -59,6 +63,7 @@ export function ChatMessageBubble({
           title={title}
           oldText={proposal.oldText}
           newText={proposal.newText}
+          isGenerating={isStreaming}
         />
 
         {/* Line-count footer */}
@@ -100,7 +105,11 @@ export function ChatMessageBubble({
         ) : null}
 
         {/* Accept / Revert controls */}
-        {isDecided ? (
+        {isStreaming ? (
+          <Text fontSize="10px" color="fg.muted" px={0.5}>
+            Receiving…
+          </Text>
+        ) : isDecided ? (
           <Text
             fontSize="11px"
             color={
@@ -153,7 +162,7 @@ export function ChatMessageBubble({
       fontSize="sm"
       lineHeight="1.55"
       color="fg"
-      className="md-prose md-prose-chat"
+      className={`md-prose md-prose-chat ${markappSurface}`}
     >
       <ReactMarkdown remarkPlugins={[remarkGfm]}>
         {stripOuterMarkdownCodeFence(message.content)}
