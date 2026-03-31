@@ -10,7 +10,6 @@ import {
 export function AgentPanel(props: {
   messages: ChatMessage[];
   streamingText: string;
-  /** When true, match finalized-message rules: stream as whole-document proposal even with 0 or many context sections */
   documentIsBlank: boolean;
   /** Current editor markdown — baseline for whole-doc streaming diff when no sections are pinned */
   documentMarkdown: string;
@@ -29,26 +28,15 @@ export function AgentPanel(props: {
   onAcceptProposal: (msgId: string) => void;
   onRevertProposal: (msgId: string) => void;
 }) {
-  const wholeDocNoPins =
-    props.contextSections.length === 0 && !props.documentIsBlank;
+  /** Match finalize rules: only treat stream as a scoped section proposal when one pin exists (or blank doc). */
   const streamingSectionProposal =
-    props.streamingText &&
-    (props.contextSections.length === 1 || props.documentIsBlank || wholeDocNoPins)
+    props.streamingText && (props.contextSections.length === 1 || props.documentIsBlank)
       ? {
-          oldText: props.documentIsBlank
-            ? ""
-            : props.contextSections.length === 1
-              ? props.contextSections[0].content
-              : props.documentMarkdown,
+          oldText: props.documentIsBlank ? "" : props.contextSections[0]!.content,
           newText: normalizeAssistantMarkdownParagraphs(
             stripStreamingOuterMarkdownCodeFence(props.streamingText),
           ),
-          sectionTitle:
-            props.documentIsBlank
-              ? "Document"
-              : props.contextSections.length === 1
-                ? props.contextSections[0].title
-                : "Document",
+          sectionTitle: props.documentIsBlank ? "Document" : props.contextSections[0]!.title,
         }
       : undefined;
 
@@ -65,49 +53,49 @@ export function AgentPanel(props: {
       <Flex direction="column" flex="1" minH={0}>
         <Box
           flex="1"
+          minH={0}
           overflowY="auto"
-          px={3}
-          py={3}
-          display="flex"
-          flexDirection="column"
-          gap={3}
           css={{
             scrollbarGutter: "stable",
           }}
         >
-          {props.messages.map((m) => (
-            <ChatMessageBubble
-              key={m.id}
-              message={m}
-              onAccept={props.onAcceptProposal}
-              onRevert={props.onRevertProposal}
-            />
-          ))}
-          {props.streamingText ? (
-            <ChatMessageBubble
-              message={{
-                id: "stream",
-                role: "assistant",
-                content: props.streamingText,
-                sectionProposal: streamingSectionProposal,
-              }}
-            />
-          ) : null}
+          <Box display="flex" flexDirection="column" gap={3} px={3} pt={3} pb={1}>
+            {props.messages.map((m) => (
+              <ChatMessageBubble
+                key={m.id}
+                message={m}
+                onAccept={props.onAcceptProposal}
+                onRevert={props.onRevertProposal}
+              />
+            ))}
+            {props.streamingText ? (
+              <ChatMessageBubble
+                message={{
+                  id: "stream",
+                  role: "assistant",
+                  content: props.streamingText,
+                  sectionProposal: streamingSectionProposal,
+                }}
+              />
+            ) : null}
+          </Box>
         </Box>
-        <ChatInput
-          contextSections={props.contextSections}
-          onRemoveContext={props.onRemoveContext}
-          allSectionsForMentions={props.allSections}
-          mentionDocument={props.mentionDocument}
-          mentionClipboard={props.mentionClipboard}
-          onToggleDocument={props.onToggleDocument}
-          onToggleClipboard={props.onToggleClipboard}
-          onAddSectionFromMention={props.onAddSection}
-          disabled={props.busy}
-          busy={props.busy}
-          onSend={props.onSend}
-          onClearChat={props.onClearChat}
-        />
+        <Box px={3} pb={3} flexShrink={0}>
+          <ChatInput
+            contextSections={props.contextSections}
+            onRemoveContext={props.onRemoveContext}
+            allSectionsForMentions={props.allSections}
+            mentionDocument={props.mentionDocument}
+            mentionClipboard={props.mentionClipboard}
+            onToggleDocument={props.onToggleDocument}
+            onToggleClipboard={props.onToggleClipboard}
+            onAddSectionFromMention={props.onAddSection}
+            disabled={props.busy}
+            busy={props.busy}
+            onSend={props.onSend}
+            onClearChat={props.onClearChat}
+          />
+        </Box>
       </Flex>
     </Flex>
   );

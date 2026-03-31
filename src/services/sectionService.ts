@@ -5,6 +5,8 @@ export interface DocSection {
   from: number;
   to: number;
   content: string;
+  /** True when this section starts at a manual break (HTML comment in markdown), not only a heading. */
+  manual?: boolean;
 }
 
 export interface OutlineNode {
@@ -23,9 +25,50 @@ type HeadingMarker = {
   from: number;
   line: number;
   implicit?: boolean;
+  manual?: boolean;
 };
 
 const HEADING_TYPES = new Set(["h1", "h2", "h3", "h4", "h5", "h6"]);
+
+/**
+ * Inserted on its own line in markdown (between blocks) so the following block starts a new outline section.
+ * Parsed only in MarkApp — harmless in other Markdown renderers (HTML comment).
+ */
+export const MARKAPP_MANUAL_SECTION_MARKER = "<!--markapp-manual-section-->";
+
+/** Plate element `type` for a void block that serializes to MARKAPP_MANUAL_SECTION_MARKER. */
+export const MARKAPP_MANUAL_SECTION_BLOCK_TYPE = "markapp_manual_section";
+
+const MANUAL_SECTION_LINE_RE = /^<!--\s*markapp-manual-section\s*-->$/i;
+
+/** True if the markdown contains at least one MarkApp manual section break line (same rule as the outline parser). */
+export function hasManualSectionMarkersInMarkdown(doc: string): boolean {
+  return doc.split(/\r?\n/).some((line) => MANUAL_SECTION_LINE_RE.test(line.replace(OUTLINE_BLANK_STRIP, "").trim()));
+}
+
+export function isManualSectionBreakBlock(node: unknown): boolean {
+  return (
+    !!node &&
+    typeof node === "object" &&
+    (node as { type?: string }).type === MARKAPP_MANUAL_SECTION_BLOCK_TYPE
+  );
+}
+
+/** True if `blockStarts[blockIndex]` immediately follows a manual marker (only whitespace between). */
+export function manualSectionMarkerImmediatelyBeforeBlock(
+  md: string,
+  blockStarts: number[],
+  blockIndex: number,
+): boolean {
+  const start = blockStarts[blockIndex];
+  if (start == null || start <= 0) return false;
+  const head = md.slice(0, start);
+  const needle = MARKAPP_MANUAL_SECTION_MARKER;
+  const idx = head.lastIndexOf(needle);
+  if (idx < 0) return false;
+  const tail = head.slice(idx + needle.length);
+  return /^[\t \n\r]*$/.test(tail);
+}
 
 /** Plate often serializes “empty” paragraphs as a zero‑width space; treat as blank for outline gaps. */
 const OUTLINE_BLANK_STRIP = /[\u200B-\u200D\uFEFF]/g;
@@ -177,6 +220,57 @@ export function topLevelBlocksIntersectingMarkdownRange(
   return [b0, b1];
 }
 
+/** Character cap for section titles shown in agent context chips and live “add section” labels. */
+export const CONTEXT_SECTION_TITLE_MAX_CHARS = 64;
+
+export function truncateContextSectionTitle(
+  s: string,
+  maxLen = CONTEXT_SECTION_TITLE_MAX_CHARS,
+): string {
+  const t = s.replace(OUTLINE_BLANK_STRIP, "").trim();
+  if (!t) return s;
+  if (t.length <= maxLen) return t;
+  return maxLen > 1 ? `${t.slice(0, maxLen - 1)}…` : t.slice(0, maxLen);
+}
+
+/**
+ * First meaningful line of a section’s markdown (skips blanks and manual section marker lines),
+ * for labels when the block range does not start with a heading.
+ */
+export function deriveContextSectionTitleFromMarkdown(
+  content: string,
+  maxLen = CONTEXT_SECTION_TITLE_MAX_CHARS,
+): string {
+  const lines = content.split(/\r?\n/);
+  for (let k = 0; k < lines.length; k++) {
+    const raw = lines[k] ?? "";
+    const L = raw.replace(OUTLINE_BLANK_STRIP, "").trim();
+    if (!L) continue;
+    if (MANUAL_SECTION_LINE_RE.test(L)) continue;
+    const hm = raw.replace(OUTLINE_BLANK_STRIP, "").trimStart().match(HEADING_RE);
+    if (hm) return truncateContextSectionTitle(hm[2].trim(), maxLen);
+    const boldMatch = L.match(/^\*\*([^*]+)\*\*$/) ?? L.match(/^__([^_]+)__$/);
+    if (boldMatch) return truncateContextSectionTitle(boldMatch[1].trim(), maxLen);
+    return truncateContextSectionTitle(L, maxLen);
+  }
+  return "(Section)";
+}
+
+function deriveManualSectionTitle(lines: string[], startLine: number): string {
+  for (let k = startLine; k < lines.length; k++) {
+    const raw = lines[k] ?? "";
+    const L = raw.replace(OUTLINE_BLANK_STRIP, "").trim();
+    if (!L) continue;
+    const hm = raw.replace(OUTLINE_BLANK_STRIP, "").trimStart().match(HEADING_RE);
+    if (hm) return hm[2].trim().slice(0, 88);
+    const boldMatch = L.match(/^\*\*([^*]+)\*\*$/) ?? L.match(/^__([^_]+)__$/);
+    if (boldMatch) return boldMatch[1].trim().slice(0, 88);
+    if (L.length > 88) return `${L.slice(0, 85)}…`;
+    return L;
+  }
+  return "(Section)";
+}
+
 function collectHeadingMarkersFromMarkdown(
   doc: string,
 ): { markers: HeadingMarker[]; lines: string[]; deduped: HeadingMarker[] } {
@@ -189,9 +283,30 @@ function collectHeadingMarkersFromMarkdown(
   }
 
   const markers: HeadingMarker[] = [];
+  const skipImplicitBecauseManual = new Set<number>();
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    const trimmedForManual = line.replace(OUTLINE_BLANK_STRIP, "").trim();
+    if (MANUAL_SECTION_LINE_RE.test(trimmedForManual)) {
+      let j = i + 1;
+      while (j < lines.length && isOutlineBlankLine(lines[j])) j++;
+      if (j >= lines.length) continue;
+      const nextStart = lines[j].replace(OUTLINE_BLANK_STRIP, "").trimStart();
+      if (HEADING_RE.test(nextStart)) continue;
+
+      skipImplicitBecauseManual.add(j);
+      markers.push({
+        level: 2,
+        title: deriveManualSectionTitle(lines, j),
+        from: lineStarts[j],
+        line: i,
+        implicit: true,
+        manual: true,
+      });
+      continue;
+    }
+
     const m = line.match(HEADING_RE);
     if (m) {
       markers.push({
@@ -202,6 +317,8 @@ function collectHeadingMarkersFromMarkdown(
       });
       continue;
     }
+
+    if (skipImplicitBecauseManual.has(i)) continue;
 
     const t = line.replace(OUTLINE_BLANK_STRIP, "").trim();
     if (t.length < 2 || t.length > 88) continue;
@@ -317,6 +434,7 @@ function dedupeMarkersSameLineSameTitle(doc: string, markers: HeadingMarker[]): 
  * only one outline row should win. Higher number wins.
  */
 function outlineMarkerPriority(m: HeadingMarker, doc: string): number {
+  if (m.manual) return 4;
   if (!m.implicit) return 4;
   if (m.line < 0) return 2;
   const lines = doc.split("\n");
@@ -363,7 +481,7 @@ function dedupeImplicitSameTitleProximity(
   const sorted = [...markers].sort((a, b) => a.from - b.from);
   const out: HeadingMarker[] = [];
   const norm = (s: string) => s.replace(OUTLINE_BLANK_STRIP, "").trim().toLowerCase();
-  const implicitL2 = (m: HeadingMarker) => Boolean(m.implicit && m.level === 2);
+  const implicitL2 = (m: HeadingMarker) => Boolean(m.implicit && m.level === 2 && !m.manual);
 
   outer: for (const m of sorted) {
     if (!implicitL2(m)) {
@@ -404,7 +522,9 @@ function markersToDocSections(deduped: HeadingMarker[], doc: string): DocSection
     const start = h.from;
     const end = i + 1 < deduped.length ? deduped[i + 1].from : doc.length;
     const id =
-      h.line >= 0 ? `sec-${h.line}-${h.level}${h.implicit ? "i" : ""}` : `sec-hint-${h.from}-${h.level}i`;
+      h.line >= 0
+        ? `sec-${h.line}-${h.level}${h.implicit ? "i" : ""}${h.manual ? "m" : ""}`
+        : `sec-hint-${h.from}-${h.level}i`;
     sections.push({
       id,
       title: h.title,
@@ -412,6 +532,7 @@ function markersToDocSections(deduped: HeadingMarker[], doc: string): DocSection
       from: start,
       to: end,
       content: doc.slice(start, end),
+      ...(h.manual ? { manual: true as const } : {}),
     });
   }
 
@@ -556,7 +677,19 @@ export function findRelevantSections(
     .sort((a, b) => b.score - a.score)
     .slice(0, topN);
 
-  return scored.map((x) => x.section);
+  if (scored.length > 0) return scored.map((x) => x.section);
+
+  const structuralIntent = /\b(section|sections|sectioning|heading|headings|outline|structure|reorganiz|reorganis|toc)\b/i.test(
+    query,
+  );
+  const headingSections = sections.filter((s) => s.level > 0);
+  if (!structuralIntent || headingSections.length === 0) return [];
+
+  if (headingSections.length <= topN) return headingSections;
+  const picks: DocSection[] = [];
+  const stride = Math.ceil(headingSections.length / topN);
+  for (let i = 0; i < headingSections.length && picks.length < topN; i += stride) picks.push(headingSections[i]!);
+  return picks;
 }
 
 /** Match trailing trim: prefix-serialization `blockStarts` vs line-based `DocSection.from` can skew slightly. */
@@ -621,4 +754,25 @@ export function buildOutline(sections: DocSection[]): OutlineNode[] {
       from: s.from,
       children: [],
     }));
+}
+
+/**
+ * Human-readable outline for the AI agent: matches MarkApp’s section model (headings + preamble).
+ * Char offsets are 0-based into the same string as --- CURRENT DOCUMENT ---.
+ */
+export function formatDocumentOutlineForAgent(sections: DocSection[]): string {
+  if (sections.length === 0) {
+    return "(No outline parsed — treat the document as plain body text until ATX headings exist.)";
+  }
+  const lines: string[] = [
+    "Each bullet is one outline region. Level 0 = preamble before the first heading; 1–6 = # … ######. Ranges are character offsets into CURRENT DOCUMENT (inclusive start, exclusive end except EOF).",
+  ];
+  for (const s of sections) {
+    const title = s.title.replace(/\r?\n/g, " ").trim().slice(0, 220);
+    const toStr = s.to < 0 ? "EOF" : String(s.to);
+    const lvl =
+      s.level <= 0 ? "0 · preamble (no heading)" : `${s.level} · ${"#".repeat(Math.min(6, s.level))}`;
+    lines.push(`- level ${lvl} · chars ${s.from}–${toStr} · id ${s.id} · ${title || "(untitled)"}`);
+  }
+  return lines.join("\n");
 }

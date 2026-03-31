@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { Box, Flex, Text, IconButton, HStack, Menu, Tooltip } from "@chakra-ui/react";
 import { useColorMode } from "@/components/ui/color-mode";
+import { chromeGhostIconProps } from "@/components/ui/quietFocusRing";
 import { modShortcut } from "@/utils/platform";
 import {
   FilePlus,
@@ -103,9 +104,9 @@ function WindowControls(props: { maximized: boolean }) {
       <IconButton
         variant="ghost"
         {...ctrl}
+        {...chromeGhostIconProps}
         aria-label="Minimize"
         onClick={() => api.windowMinimize()}
-        _hover={{ bg: "bg.emphasized" }}
       >
         <Box w="10px" h="1px" bg="currentColor" borderRadius="1px" flexShrink={0} aria-hidden />
       </IconButton>
@@ -131,6 +132,7 @@ function WindowControls(props: { maximized: boolean }) {
       <IconButton
         variant="ghost"
         {...ctrl}
+        {...chromeGhostIconProps}
         aria-label="Close"
         onClick={() => api.windowClose()}
         _hover={{ bg: "red.600", color: "white" }}
@@ -210,7 +212,7 @@ export function TitleBar(props: {
         style={dragStyle}
         userSelect="none"
       >
-        <img src="/icon.png" alt="MarkApp" width={20} height={20} style={{ display: "block", objectFit: "contain" }} />
+        <img src="./icon.png" alt="MarkApp" width={20} height={20} style={{ display: "block", objectFit: "contain" }} />
       </Flex>
 
       <HStack
@@ -230,7 +232,13 @@ export function TitleBar(props: {
             }}
           >
             <Menu.Trigger asChild>
-              <IconButton aria-label="New document" size="sm" variant="ghost" css={{ _icon: { boxSize: "4" } }}>
+              <IconButton
+                aria-label="New document"
+                size="sm"
+                variant="ghost"
+                {...chromeGhostIconProps}
+                css={{ _icon: { boxSize: "4" } }}
+              >
                 <FilePlus size={16} />
               </IconButton>
             </Menu.Trigger>
@@ -255,7 +263,13 @@ export function TitleBar(props: {
             }}
           >
             <Menu.Trigger asChild>
-              <IconButton aria-label="Open" size="sm" variant="ghost" css={{ _icon: { boxSize: "4" } }}>
+              <IconButton
+                aria-label="Open"
+                size="sm"
+                variant="ghost"
+                {...chromeGhostIconProps}
+                css={{ _icon: { boxSize: "4" } }}
+              >
                 <FolderOpen size={16} />
               </IconButton>
             </Menu.Trigger>
@@ -287,6 +301,7 @@ export function TitleBar(props: {
             aria-label="Save"
             size="sm"
             variant="ghost"
+            {...chromeGhostIconProps}
             onClick={() => props.onSave()}
             css={{ _icon: { boxSize: "4" } }}
           >
@@ -297,7 +312,13 @@ export function TitleBar(props: {
         <TTip label="More — Save as, templates, settings, theme">
           <Menu.Root positioning={titleBarMenuPositioning}>
             <Menu.Trigger asChild>
-              <IconButton aria-label="More options" size="sm" variant="ghost" css={{ _icon: { boxSize: "4" } }}>
+              <IconButton
+                aria-label="More options"
+                size="sm"
+                variant="ghost"
+                {...chromeGhostIconProps}
+                css={{ _icon: { boxSize: "4" } }}
+              >
                 <MoreHorizontal size={16} />
               </IconButton>
             </Menu.Trigger>

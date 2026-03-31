@@ -28,6 +28,7 @@ import {
   FontColorPlugin,
   FontFamilyPlugin,
   FontSizePlugin,
+  TextAlignPlugin,
 } from "@platejs/basic-styles/react";
 import { CodeBlockPlugin, CodeLinePlugin, CodeSyntaxPlugin } from "@platejs/code-block/react";
 import { IndentPlugin } from "@platejs/indent/react";
@@ -41,6 +42,10 @@ import { createSlatePlugin, KEYS } from "platejs";
 import { ParagraphPlugin, toPlatePlugin } from "platejs/react";
 
 import {
+  MARKAPP_MANUAL_SECTION_BLOCK_TYPE,
+  MARKAPP_MANUAL_SECTION_MARKER,
+} from "@/services/sectionService";
+import {
   ParagraphElement,
   H1Element,
   H2Element,
@@ -50,6 +55,7 @@ import {
   H6Element,
   BlockquoteElement,
   HrElement,
+  MarkappManualSectionElement,
   BlockList,
   CodeBlockElement,
   CodeLineElement,
@@ -61,6 +67,8 @@ import {
   UnderlineLeaf,
   StrikethroughLeaf,
 } from "./plateElements";
+
+const MANUAL_SECTION_HTML_COMMENT_RE = /^<!--\s*markapp-manual-section\s*-->$/i;
 
 const lowlight = createLowlight(all);
 
@@ -121,6 +129,14 @@ const leafFormatKeys = [
  * After Enter, Slate copies marks onto the new block's text. When that block is empty, strip those
  * marks and the editor's stored marks so the next line starts unformatted (paragraphs, lists, etc.).
  */
+const MarkappManualSectionPlugin = toPlatePlugin(
+  createSlatePlugin({
+    key: MARKAPP_MANUAL_SECTION_BLOCK_TYPE,
+    node: { isElement: true, isVoid: true },
+  }),
+  { render: { node: MarkappManualSectionElement } },
+);
+
 const clearFormatsOnEmptyNewLinePlugin = toPlatePlugin(
   createSlatePlugin({
     key: "clearFormatsOnEmptyNewLine",
@@ -174,6 +190,8 @@ const autoformatLists: AutoformatRule[] = [
 
 export const editorPlugins = [
   clearFormatsOnEmptyNewLinePlugin,
+
+  MarkappManualSectionPlugin,
 
   ParagraphPlugin.withComponent(ParagraphElement),
 
@@ -258,10 +276,36 @@ export const editorPlugins = [
     },
   }),
 
+  TextAlignPlugin.configure({
+    inject: {
+      targetPlugins: [...KEYS.heading, KEYS.p, KEYS.blockquote],
+    },
+  }),
+
   /** GFM + MDX so font color/family/size survive round-trip as `<span style="...">` via @platejs/markdown fontRules. */
   MarkdownPlugin.configure({
     options: {
       remarkPlugins: [remarkGfm, remarkMdx],
+      rules: {
+        html: {
+          deserialize(mdastNode) {
+            const v = (mdastNode.value || "").trim();
+            if (MANUAL_SECTION_HTML_COMMENT_RE.test(v)) {
+              return {
+                type: MARKAPP_MANUAL_SECTION_BLOCK_TYPE,
+                children: [{ text: "" }],
+              };
+            }
+            return { text: (mdastNode.value || "").replaceAll("<br />", "\n") };
+          },
+        },
+        [MARKAPP_MANUAL_SECTION_BLOCK_TYPE]: {
+          serialize: () => ({
+            type: "html",
+            value: `${MARKAPP_MANUAL_SECTION_MARKER}\n`,
+          }),
+        },
+      },
     },
   }),
 

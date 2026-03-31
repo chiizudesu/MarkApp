@@ -18,10 +18,16 @@ import {
   Settings2,
   FilePlus,
   ChevronDown,
+  AlignLeft,
+  AlignCenter,
+  AlignRight,
+  AlignJustify,
 } from "lucide-react";
 import { Editor } from "slate";
 import type { PlateEditorHandle } from "./PlateEditor";
+import type { Alignment } from "@platejs/basic-styles";
 import { modShortcut } from "@/utils/platform";
+import { chromeGhostIconProps, quietFocusRing } from "@/components/ui/quietFocusRing";
 import {
   BASE_FONT_SIZE_PX,
   FONT_SIZE_VALUES,
@@ -167,6 +173,7 @@ const dropdownTriggerProps = {
   gap: "2px",
   fontWeight: "medium",
   flexShrink: 0,
+  ...chromeGhostIconProps,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -223,6 +230,8 @@ type FmtState = {
   fontColor: string;
   fontFamily: string;
   fontSize: string;
+  /** Block `textAlign` from Plate (`start` / `left` = default flush left). */
+  textAlign?: Alignment;
 };
 
 // ---------------------------------------------------------------------------
@@ -293,6 +302,7 @@ export function EditorToolbar({
     fontColor: "",
     fontFamily: "",
     fontSize: "",
+    textAlign: undefined,
   });
 
   const tick = useCallback(() => {
@@ -302,6 +312,9 @@ export function EditorToolbar({
       const marks = (Editor.marks(editor) ?? {}) as Record<string, unknown>;
       const block = editor.api?.block?.({ highest: true });
       const blockType = block?.[0]?.type as string | undefined;
+      const blockAlign = (block?.[0] as Record<string, unknown> | undefined)?.["textAlign"] as
+        | Alignment
+        | undefined;
       const nextFmt: FmtState = {
         bold: !!marks["bold"],
         italic: !!marks["italic"],
@@ -314,6 +327,7 @@ export function EditorToolbar({
         fontColor: (marks["color"] as string) ?? "",
         fontFamily: (marks["fontFamily"] as string) ?? "",
         fontSize: (marks["fontSize"] as string) ?? "",
+        textAlign: blockAlign,
       };
       setFmt(nextFmt);
     } catch {
@@ -337,6 +351,9 @@ export function EditorToolbar({
       ? {
           bg: { _light: "blue.50", _dark: "rgba(59, 130, 246, 0.22)" },
           color: { _light: "blue.700", _dark: "blue.200" },
+          _hover: {
+            bg: { _light: "blue.100", _dark: "rgba(59, 130, 246, 0.32)" },
+          },
         }
       : {};
 
@@ -384,6 +401,15 @@ export function EditorToolbar({
 
   const clearFontColor = () => {
     run((e) => Editor.removeMark(e, "color"));
+  };
+
+  const alignIsDefaultLeft = (a: Alignment | undefined) =>
+    a == null || a === "start" || a === "left";
+
+  const setBlockAlign = (value: Alignment) => {
+    run((e) => {
+      e.tf.textAlign?.setNodes?.(value);
+    });
   };
 
   return (
@@ -496,6 +522,7 @@ export function EditorToolbar({
                   aria-label="Grow Font"
                   size="sm"
                   variant="ghost"
+                  {...chromeGhostIconProps}
                   minW="28px"
                   w="28px"
                   h="28px"
@@ -509,6 +536,7 @@ export function EditorToolbar({
                   aria-label="Shrink Font"
                   size="sm"
                   variant="ghost"
+                  {...chromeGhostIconProps}
                   minW="28px"
                   w="28px"
                   h="28px"
@@ -533,6 +561,7 @@ export function EditorToolbar({
                     borderRadius="md"
                     cursor="pointer"
                     flexShrink={0}
+                    {...quietFocusRing}
                     _hover={{ bg: { _light: "blackAlpha.80", _dark: "whiteAlpha.80" } }}
                     aria-label="Font color"
                   >
@@ -626,31 +655,31 @@ export function EditorToolbar({
 
             {/* Text marks */}
             <TBarTip label={`Bold (${modShortcut("B")})`}>
-              <IconButton aria-label="Bold" size="sm" variant="ghost"
+              <IconButton aria-label="Bold" size="sm" variant="ghost" {...chromeGhostIconProps}
                 onClick={() => run((e) => e.tf.bold.toggle())} {...markBtn(fmt.bold)}>
                 <Bold size={14} />
               </IconButton>
             </TBarTip>
             <TBarTip label={`Italic (${modShortcut("I")})`}>
-              <IconButton aria-label="Italic" size="sm" variant="ghost"
+              <IconButton aria-label="Italic" size="sm" variant="ghost" {...chromeGhostIconProps}
                 onClick={() => run((e) => e.tf.italic.toggle())} {...markBtn(fmt.italic)}>
                 <Italic size={14} />
               </IconButton>
             </TBarTip>
             <TBarTip label={`Underline (${modShortcut("U")})`}>
-              <IconButton aria-label="Underline" size="sm" variant="ghost"
+              <IconButton aria-label="Underline" size="sm" variant="ghost" {...chromeGhostIconProps}
                 onClick={() => run((e) => e.tf.underline.toggle())} {...markBtn(fmt.underline)}>
                 <Underline size={14} />
               </IconButton>
             </TBarTip>
             <TBarTip label="Strikethrough">
-              <IconButton aria-label="Strikethrough" size="sm" variant="ghost"
+              <IconButton aria-label="Strikethrough" size="sm" variant="ghost" {...chromeGhostIconProps}
                 onClick={() => run((e) => e.tf.strikethrough.toggle())} {...markBtn(fmt.strikethrough)}>
                 <Strikethrough size={14} />
               </IconButton>
             </TBarTip>
             <TBarTip label="Inline code">
-              <IconButton aria-label="Inline code" size="sm" variant="ghost"
+              <IconButton aria-label="Inline code" size="sm" variant="ghost" {...chromeGhostIconProps}
                 onClick={() => run((e) => e.tf.code.toggle())} {...markBtn(fmt.code)}>
                 <Code size={14} />
               </IconButton>
@@ -662,21 +691,21 @@ export function EditorToolbar({
           {/* ── PARAGRAPH group ─────────────────────────────────────── */}
           <ToolbarGroup label="Paragraph">
             <TBarTip label="Bullet list">
-              <IconButton aria-label="Bullet list" size="sm" variant="ghost"
+              <IconButton aria-label="Bullet list" size="sm" variant="ghost" {...chromeGhostIconProps}
                 onClick={() => run((e) => toggleList(e, { listStyleType: ListStyleType.Disc }))}
                 {...markBtn(fmt.bulletList)}>
                 <List size={14} />
               </IconButton>
             </TBarTip>
             <TBarTip label="Numbered list">
-              <IconButton aria-label="Numbered list" size="sm" variant="ghost"
+              <IconButton aria-label="Numbered list" size="sm" variant="ghost" {...chromeGhostIconProps}
                 onClick={() => run((e) => toggleList(e, { listStyleType: ListStyleType.Decimal }))}
                 {...markBtn(fmt.numberedList)}>
                 <ListOrdered size={14} />
               </IconButton>
             </TBarTip>
             <TBarTip label="Horizontal rule">
-              <IconButton aria-label="Horizontal rule" size="sm" variant="ghost"
+              <IconButton aria-label="Horizontal rule" size="sm" variant="ghost" {...chromeGhostIconProps}
                 onClick={() =>
                   run((e) => {
                     e.tf.insertNodes({ type: "hr", children: [{ text: "" }] });
@@ -690,17 +719,71 @@ export function EditorToolbar({
 
           <Separator orientation="vertical" h="38px" mx={1} />
 
+          {/* ── ALIGN group ─────────────────────────────────────────── */}
+          <ToolbarGroup label="Align">
+            <TBarTip label="Align left">
+              <IconButton
+                aria-label="Align left"
+                size="sm"
+                variant="ghost"
+                {...chromeGhostIconProps}
+                onClick={() => setBlockAlign("start")}
+                {...markBtn(alignIsDefaultLeft(fmt.textAlign))}
+              >
+                <AlignLeft size={14} />
+              </IconButton>
+            </TBarTip>
+            <TBarTip label="Align center">
+              <IconButton
+                aria-label="Align center"
+                size="sm"
+                variant="ghost"
+                {...chromeGhostIconProps}
+                onClick={() => setBlockAlign("center")}
+                {...markBtn(fmt.textAlign === "center")}
+              >
+                <AlignCenter size={14} />
+              </IconButton>
+            </TBarTip>
+            <TBarTip label="Align right">
+              <IconButton
+                aria-label="Align right"
+                size="sm"
+                variant="ghost"
+                {...chromeGhostIconProps}
+                onClick={() => setBlockAlign("right")}
+                {...markBtn(fmt.textAlign === "right" || fmt.textAlign === "end")}
+              >
+                <AlignRight size={14} />
+              </IconButton>
+            </TBarTip>
+            <TBarTip label="Justify">
+              <IconButton
+                aria-label="Justify"
+                size="sm"
+                variant="ghost"
+                {...chromeGhostIconProps}
+                onClick={() => setBlockAlign("justify")}
+                {...markBtn(fmt.textAlign === "justify")}
+              >
+                <AlignJustify size={14} />
+              </IconButton>
+            </TBarTip>
+          </ToolbarGroup>
+
+          <Separator orientation="vertical" h="38px" mx={1} />
+
           {/* ── BLOCKS group ────────────────────────────────────────── */}
           <ToolbarGroup label="Blocks">
             <TBarTip label="Blockquote">
-              <IconButton aria-label="Blockquote" size="sm" variant="ghost"
+              <IconButton aria-label="Blockquote" size="sm" variant="ghost" {...chromeGhostIconProps}
                 onClick={() => run((e) => e.tf.blockquote.toggle())}
                 {...markBtn(fmt.block === "blockquote")}>
                 <Quote size={14} />
               </IconButton>
             </TBarTip>
             <TBarTip label="Code block (Mod+Alt+8)">
-              <IconButton aria-label="Code block" size="sm" variant="ghost"
+              <IconButton aria-label="Code block" size="sm" variant="ghost" {...chromeGhostIconProps}
                 onClick={() => run((e) => { const tf = (e as any).tf; tf.code_block?.toggle?.(); })}
                 {...markBtn(fmt.block === "code_block")}>
                 <FileCode2 size={14} />
@@ -713,17 +796,17 @@ export function EditorToolbar({
           {/* ── TEMPLATES group ─────────────────────────────────────── */}
           <ToolbarGroup label="Templates">
             <TBarTip label="Open template">
-              <IconButton aria-label="Open template" size="sm" variant="ghost" onClick={onOpenTemplates}>
+              <IconButton aria-label="Open template" size="sm" variant="ghost" {...chromeGhostIconProps} onClick={onOpenTemplates}>
                 <FolderOpen size={14} />
               </IconButton>
             </TBarTip>
             <TBarTip label="Manage templates">
-              <IconButton aria-label="Manage templates" size="sm" variant="ghost" onClick={onManageTemplates}>
+              <IconButton aria-label="Manage templates" size="sm" variant="ghost" {...chromeGhostIconProps} onClick={onManageTemplates}>
                 <Settings2 size={14} />
               </IconButton>
             </TBarTip>
             <TBarTip label="Save as template">
-              <IconButton aria-label="Save as template" size="sm" variant="ghost" onClick={onSaveAsTemplate}>
+              <IconButton aria-label="Save as template" size="sm" variant="ghost" {...chromeGhostIconProps} onClick={onSaveAsTemplate}>
                 <FilePlus size={14} />
               </IconButton>
             </TBarTip>
@@ -734,8 +817,8 @@ export function EditorToolbar({
         <HStack gap={1} flexShrink={0} align="center" h="38px">
           <TBarTip
             label={sectionHoverHighlight
-              ? "Section highlights on (hover + outline selection) — click to hide"
-              : "Section highlights off — click to show"
+              ? "Section margin bars on (hover + outline selection) — click to hide"
+              : "Section margin bars off — click to show"
             }
           >
             <IconButton
@@ -743,6 +826,7 @@ export function EditorToolbar({
               size="xs"
               variant={sectionHoverHighlight ? "subtle" : "ghost"}
               colorPalette="purple"
+              {...(sectionHoverHighlight ? quietFocusRing : chromeGhostIconProps)}
               onClick={onToggleSectionHoverHighlight}
             >
               <Highlighter size={13.6} strokeWidth={1.75} />
@@ -754,6 +838,7 @@ export function EditorToolbar({
               size="xs"
               variant={agentOpen ? "subtle" : "ghost"}
               colorPalette="blue"
+              {...(agentOpen ? quietFocusRing : chromeGhostIconProps)}
               onClick={onToggleAgent}
             >
               <PanelRight size={13.6} strokeWidth={1.75} />

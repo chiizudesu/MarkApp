@@ -71,8 +71,14 @@ function HStackRow(props: {
       alignItems="center"
       justifyContent="space-between"
       gap={1}
-      bg={props.active ? { _light: "blue.50", _dark: "blue.900" } : undefined}
-      borderRadius="sm"
+      bg={
+        props.active
+          ? {
+              _light: "rgba(167, 139, 250, 0.22)",
+              _dark: "rgba(192, 181, 253, 0.12)",
+            }
+          : undefined
+      }
       cursor="pointer"
       onClick={props.onPick}
       _hover={{ bg: { _light: "blackAlpha.50", _dark: "whiteAlpha.50" } }}
@@ -84,7 +90,7 @@ function HStackRow(props: {
         aria-label={`Add “${props.title}” to chat context`}
         size="xs"
         variant="ghost"
-        colorPalette="blue"
+        colorPalette="purple"
         flexShrink={0}
         minW="22px"
         h="22px"
@@ -117,9 +123,9 @@ export function DocumentOutline(props: {
         flexDirection="column"
         borderRightWidth="1px"
         borderColor={{ _light: "blackAlpha.80", _dark: "whiteAlpha.60" }}
-        py={2}
+        p={3}
       >
-        <HStack px={3} py={1} justify="space-between" align="center">
+        <HStack py={1} justify="space-between" align="center">
           <Text fontSize="xs" fontWeight="semibold" color="fg.muted" letterSpacing="tight">
             Outline
           </Text>
@@ -135,7 +141,7 @@ export function DocumentOutline(props: {
           </IconButton>
         </HStack>
         {open ? (
-          <Text fontSize="xs" color="fg.muted" px={3} py={1}>
+          <Text fontSize="xs" color="fg.muted" py={1}>
             No headings
           </Text>
         ) : null}
@@ -151,9 +157,9 @@ export function DocumentOutline(props: {
       overflow="hidden"
       borderRightWidth="1px"
       borderColor={{ _light: "blackAlpha.80", _dark: "whiteAlpha.60" }}
-      py={2}
+      p={3}
     >
-      <HStack px={3} mb={1} justify="space-between" align="center">
+      <HStack mb={1} justify="space-between" align="center">
         <Text fontSize="xs" fontWeight="semibold" color="fg.muted" letterSpacing="tight">
           Outline
         </Text>

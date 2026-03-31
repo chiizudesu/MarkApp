@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Flex, Dialog, Portal, Button, VStack, Field, Input, Text } from "@chakra-ui/react";
 import { useColorMode } from "@/components/ui/color-mode";
 import { PlateEditor, type PlateEditorHandle } from "@/components/Editor/PlateEditor";
@@ -36,7 +36,13 @@ import {
   writeTextFile,
   pushRecent,
 } from "@/services/documentService";
-import { getSectionsFromText, buildOutline, findRelevantSections, type DocSection } from "@/services/sectionService";
+import {
+  getSectionsFromText,
+  buildOutline,
+  findRelevantSections,
+  hasManualSectionMarkersInMarkdown,
+  type DocSection,
+} from "@/services/sectionService";
 import {
   streamAgentTurn,
   streamSectionReplace,
@@ -57,6 +63,98 @@ import {
   looksLikeAssistantDocumentDraft,
 } from "@/utils/editorDocContext";
 
+/** Replace one occurrence of needle; when hintIndex is set, pick the match closest to that index. */
+function replaceSubstringAtHint(
+  haystack: string,
+  needle: string,
+  replacement: string,
+  hintIndex?: number,
+): string | null {
+  if (!needle) return null;
+  const indices: number[] = [];
+  let p = 0;
+  while (true) {
+    const i = haystack.indexOf(needle, p);
+    if (i < 0) break;
+    indices.push(i);
+    p = i + 1;
+  }
+  if (indices.length === 0) return null;
+  const idx =
+    hintIndex !== undefined && hintIndex >= 0
+      ? indices.reduce((best, cur) =>
+          Math.abs(cur - hintIndex) < Math.abs(best - hintIndex) ? cur : best,
+        indices[0]!)
+      : indices[0]!;
+  return haystack.slice(0, idx) + replacement + haystack.slice(idx + needle.length);
+}
+
+function resolveProposalMarkdownRange(
+  p: NonNullable<ChatMessage["sectionProposal"]>,
+  sections: DocSection[],
+  liveDoc: string,
+): { sectionFrom: number; sectionTo: number } {
+  const title = p.sectionTitle ?? "Section";
+  if (title === "Document") return { sectionFrom: -1, sectionTo: -1 };
+
+  if (title === "(Selection)") {
+    const needles = [
+      ...new Set(
+        [normalizeAssistantMarkdownParagraphs(p.newText), p.newText].filter((s) => s.length > 0),
+      ),
+    ];
+    let bestIdx = -1;
+    let bestLen = 0;
+    const hint = p.sectionMarkdownFrom ?? 0;
+    for (const needle of needles) {
+      let pos = 0;
+      while (true) {
+        const i = liveDoc.indexOf(needle, pos);
+        if (i < 0) break;
+        if (bestIdx < 0 || Math.abs(i - hint) < Math.abs(bestIdx - hint)) {
+          bestIdx = i;
+          bestLen = needle.length;
+        }
+        pos = i + 1;
+      }
+    }
+    if (bestIdx >= 0 && bestLen > 0) {
+      return { sectionFrom: bestIdx, sectionTo: bestIdx + bestLen };
+    }
+    const sf = p.sectionMarkdownFrom;
+    const st = p.sectionMarkdownTo;
+    if (sf !== undefined && st !== undefined && st > sf) {
+      return { sectionFrom: sf, sectionTo: st };
+    }
+    return { sectionFrom: -1, sectionTo: -1 };
+  }
+
+  const storedFrom = p.sectionMarkdownFrom;
+  let startSec =
+    storedFrom !== undefined
+      ? sections.find((s) => s.level > 0 && s.from === storedFrom)
+      : undefined;
+  if (!startSec) {
+    const sameTitle = sections.filter((s) => s.level > 0 && s.title === title);
+    if (sameTitle.length === 1) startSec = sameTitle[0];
+    else if (sameTitle.length > 1 && storedFrom !== undefined) {
+      startSec = sameTitle.reduce((best, s) =>
+        Math.abs(s.from - storedFrom) < Math.abs(best.from - storedFrom) ? s : best,
+      sameTitle[0]!);
+    }
+  }
+
+  if (!startSec) return { sectionFrom: -1, sectionTo: -1 };
+
+  const nextPeer = sections.find(
+    (s) => s.level > 0 && s.level <= startSec.level && s.from > startSec.from,
+  );
+  return {
+    sectionFrom: startSec.from,
+    sectionTo: nextPeer ? nextPeer.from : -1,
+  };
+}
+
 function docTitle(path: string | null) {
   if (!path) return "Untitled";
   const parts = path.split(/[/\\]/);
@@ -71,6 +169,28 @@ function sectionToRef(s: DocSection): SectionRef {
     from: s.from,
     to: s.to,
   };
+}
+
+/** Re-resolve pinned outline sections against live markdown so ids/from/to match after edits (incl. manual sections). */
+function resolvePinnedSectionsToLiveDoc(refs: SectionRef[], liveDoc: string): SectionRef[] {
+  if (refs.length === 0) return refs;
+  const live = getSectionsFromText(liveDoc).filter((s) => s.level > 0);
+  const byId = new Map(live.map((s) => [s.id, s]));
+  return refs.map((ref) => {
+    const hit = byId.get(ref.id);
+    if (hit) return sectionToRef(hit);
+    const prefix = ref.content.trim().slice(0, 48);
+    const near =
+      live.find(
+        (s) =>
+          s.title === ref.title &&
+          prefix.length > 0 &&
+          s.content.slice(0, Math.min(prefix.length + 24, s.content.length)).includes(prefix),
+      ) ??
+      live.find((s) => s.title === ref.title) ??
+      live.find((s) => Math.abs(s.from - ref.from) <= 120 && s.content === ref.content);
+    return near ? sectionToRef(near) : ref;
+  });
 }
 
 function chatSidecarPath(filePath: string | null) {
@@ -140,38 +260,16 @@ export function App() {
   const outline = useMemo(() => buildOutline(sections.filter((s) => s.level > 0)), [sections]);
   const allSectionRefs = useMemo(() => sections.filter((s) => s.level > 0).map(sectionToRef), [sections]);
 
+  /** Editor content after flushing any debounced sync (use before save, agent, copy). */
+  const getLiveMarkdown = useCallback((): string => {
+    if (previewMode || showWelcome || !editorRef.current) return doc;
+    editorRef.current.flushMarkdownToParent();
+    return editorRef.current.getMarkdown();
+  }, [previewMode, showWelcome, doc]);
+
   /** Inline AI diff UI on the sheet (highlight + Keep / Undo), same proposal as the agent chat. */
   const editorProposalInline = useMemo(() => {
     const documentIsBlank = isEffectivelyBlankDocument(doc);
-
-    // Helper: find a section's from/to by heading offset (preferred) or title (fallback).
-    // Returns [-1,-1] to mean "whole document".
-    // After an AI edit, the section may be split by added sub-headings, so we walk forward
-    // to the next section at the SAME OR HIGHER heading level to get the true span.
-    const sectionRange = (
-      title: string,
-      storedFrom?: number,
-    ): { sectionFrom: number; sectionTo: number } => {
-      if (title === "Document") return { sectionFrom: -1, sectionTo: -1 };
-
-      // Prefer the stored offset (stable across edits) over a title search.
-      const startSec =
-        storedFrom !== undefined
-          ? sections.find((s) => s.level > 0 && s.from === storedFrom)
-          : sections.find((s) => s.level > 0 && s.title === title);
-
-      if (!startSec) return { sectionFrom: -1, sectionTo: -1 };
-
-      // Find the next section at the same or higher level (lower level number = higher heading).
-      // This spans across any sub-headings the AI may have added inside the block.
-      const nextPeer = sections.find(
-        (s) => s.level > 0 && s.level <= startSec.level && s.from > startSec.from,
-      );
-      return {
-        sectionFrom: startSec.from,
-        sectionTo: nextPeer ? nextPeer.from : -1,
-      };
-    };
 
     // Show streaming overlay only when we know a sectionProposal will be created:
     // exactly one pinned section, or the document is blank. The "wholeDocNoPins" case
@@ -179,11 +277,35 @@ export function App() {
     // whether the output will qualify as a document draft — showing the overlay for every
     // ordinary chat reply would be a false positive.
     if (agentBusy && streamingText && (contextSections.length === 1 || documentIsBlank)) {
-      const title = documentIsBlank ? "Document" : contextSections[0]!.title;
-      const range = contextSections.length === 1
-        ? { sectionFrom: contextSections[0]!.from, sectionTo: contextSections[0]!.to }
-        : { sectionFrom: -1, sectionTo: -1 };
-      return { state: "streaming" as const, sectionTitle: title, ...range };
+      const ref = contextSections.length === 1 ? contextSections[0]! : null;
+      const title = documentIsBlank ? "Document" : ref!.title;
+      let sectionFrom = -1;
+      let sectionTo = -1;
+      let oldText = "";
+      if (documentIsBlank) {
+        sectionFrom = -1;
+        sectionTo = -1;
+        oldText = "";
+      } else if (ref) {
+        oldText = ref.content;
+        sectionFrom = ref.from;
+        sectionTo = ref.to;
+        if (title === "(Selection)" && sectionTo <= sectionFrom && ref.content) {
+          const i = doc.indexOf(ref.content);
+          if (i >= 0) {
+            sectionFrom = i;
+            sectionTo = i + ref.content.length;
+          }
+        }
+      }
+      return {
+        state: "streaming" as const,
+        sectionTitle: title,
+        sectionFrom,
+        sectionTo,
+        oldText,
+        newText: streamingText,
+      };
     }
 
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -195,7 +317,9 @@ export function App() {
           state: "pending" as const,
           sectionTitle: title,
           messageId: m.id,
-          ...sectionRange(title, p.sectionMarkdownFrom),
+          oldText: p.oldText,
+          newText: p.newText,
+          ...resolveProposalMarkdownRange(p, sections, doc),
         };
       }
     }
@@ -292,9 +416,10 @@ export function App() {
 
   const persistDoc = useCallback(async () => {
     if (!filePath) return;
-    await writeTextFile(filePath, doc);
+    const md = getLiveMarkdown();
+    await writeTextFile(filePath, md);
     setDirty(false);
-  }, [filePath, doc]);
+  }, [filePath, getLiveMarkdown]);
 
   useEffect(() => {
     let intervalId: ReturnType<typeof setInterval> | null = null;
@@ -338,7 +463,8 @@ export function App() {
       let text = await readTextFile(p);
       const initialSecs = getSectionsFromText(text);
       const onlyRoot = initialSecs.length === 1 && initialSecs[0]?.level === 0;
-      if (onlyRoot && text.trim().length >= 400) {
+      const skipAutoSectionBecauseManual = hasManualSectionMarkersInMarkdown(text);
+      if (onlyRoot && !skipAutoSectionBecauseManual && text.trim().length >= 400) {
         try {
           setAgentBusy(true);
           text = await autoSectionDocument(text);
@@ -394,7 +520,7 @@ export function App() {
     if (!p) return;
     setFilePath(p);
     try {
-      await writeTextFile(p, doc);
+      await writeTextFile(p, getLiveMarkdown());
       setDirty(false);
       await pushRecent(p);
       await refreshRecents();
@@ -414,7 +540,7 @@ export function App() {
     if (!p) return;
     setFilePath(p);
     try {
-      await writeTextFile(p, doc);
+      await writeTextFile(p, getLiveMarkdown());
       setDirty(false);
       await pushRecent(p);
       await refreshRecents();
@@ -435,13 +561,17 @@ export function App() {
     setStreamingText("");
   };
 
-  const onMarkdownChange = (md: string) => {
-    setDoc(md);
+  const onMarkdownChange = useCallback((md: string) => {
+    startTransition(() => setDoc(md));
     setDirty(true);
-  };
+  }, []);
 
   const applySectionReplacementToEditor = useCallback(
-    (oldText: string, newText: string, opts?: { normalizeReplacement?: boolean }) => {
+    (
+      oldText: string,
+      newText: string,
+      opts?: { normalizeReplacement?: boolean; replaceHintIndex?: number },
+    ) => {
       const normalizeReplacement = opts?.normalizeReplacement !== false;
       const replacement = normalizeReplacement ? normalizeAssistantMarkdownParagraphs(newText) : newText;
       const handle = editorRef.current;
@@ -452,9 +582,17 @@ export function App() {
         // Blank or placeholder document — insert the whole response directly
         nextMd = replacement;
       } else {
-        const replaced = current.replace(oldText, replacement);
-        if (replaced !== current) {
-          // Exact section match found — use the surgical replace
+        const hint = opts?.replaceHintIndex;
+        const hinted =
+          hint !== undefined && hint >= 0 ? replaceSubstringAtHint(current, oldText, replacement, hint) : null;
+        const replaced =
+          hinted !== null && hinted !== current
+            ? hinted
+            : (() => {
+                const r = current.replace(oldText, replacement);
+                return r !== current ? r : null;
+              })();
+        if (replaced !== null) {
           nextMd = replaced;
         } else if (oldText.length > current.length * 0.6) {
           // oldText was most of the document, so a whole-doc replacement was intended
@@ -483,11 +621,80 @@ export function App() {
   }, []);
 
   const revertProposal = useCallback((msgId: string) => {
+    const handle = editorRef.current;
+    if (!handle) return;
+    handle.flushMarkdownToParent();
     const msg = messages.find((m) => m.id === msgId);
     if (!msg?.sectionProposal) return;
-    applySectionReplacementToEditor(msg.sectionProposal.newText, msg.sectionProposal.oldText, {
-      normalizeReplacement: false,
-    });
+    const { oldText, newText } = msg.sectionProposal;
+    const live = handle.getMarkdown();
+    const normalizedNew = normalizeAssistantMarkdownParagraphs(newText);
+    const needles = [...new Set([normalizedNew, newText].filter((s) => s.length > 0))];
+    const hint = msg.sectionProposal.sectionMarkdownFrom;
+
+    let nextMd: string | null = null;
+    for (const needle of needles) {
+      const replaced = replaceSubstringAtHint(live, needle, oldText, hint);
+      if (replaced !== null && replaced !== live) {
+        nextMd = replaced;
+        break;
+      }
+    }
+
+    if (nextMd == null && oldText === "") {
+      for (const needle of needles) {
+        if (live === needle || live.trim() === needle.trim()) {
+          nextMd = "";
+          break;
+        }
+      }
+    }
+
+    const normLive = normalizeAssistantMarkdownParagraphs(live);
+    if (nextMd == null) {
+      for (const needle of needles) {
+        if (needle && normLive === normalizeAssistantMarkdownParagraphs(needle)) {
+          nextMd = oldText;
+          break;
+        }
+      }
+    }
+
+    // Apply used whole-document swap when `oldText` was most of the doc — serialized markdown may
+    // not contain the stored `newText` as a literal substring after Plate round-trips.
+    if (nextMd == null && oldText.length > 0 && oldText.length > live.length * 0.6) {
+      nextMd = oldText;
+    }
+
+    if (nextMd == null && msg.sectionProposal.sectionTitle === "Document" && oldText.length > 0) {
+      nextMd = oldText;
+    }
+
+    // Plate serialize/round-trip often changes markdown so `newText` is no longer a literal substring of
+    // `live`. The overlay already resolves the edited span via outline — reuse that for revert.
+    if (nextMd == null) {
+      const title = msg.sectionProposal.sectionTitle ?? "Section";
+      if (title !== "Document") {
+        const liveSections = getSectionsFromText(live);
+        const { sectionFrom, sectionTo } = resolveProposalMarkdownRange(
+          msg.sectionProposal,
+          liveSections,
+          live,
+        );
+        if (sectionFrom >= 0) {
+          const end = sectionTo < 0 ? live.length : sectionTo;
+          if (end >= sectionFrom) {
+            nextMd = live.slice(0, sectionFrom) + oldText + live.slice(end);
+          }
+        }
+      }
+    }
+
+    if (nextMd == null) return;
+
+    handle.setMarkdown(nextMd);
+    setDoc(handle.getMarkdown());
+    setDirty(true);
     setMessages((prev) =>
       prev.map((m) =>
         m.id === msgId && m.sectionProposal
@@ -495,7 +702,7 @@ export function App() {
           : m,
       ),
     );
-  }, [messages, applySectionReplacementToEditor]);
+  }, [messages]);
 
   const addSectionToChat = (from: number, _title: string) => {
     const sec = sections.find((s) => s.from === from);
@@ -509,6 +716,22 @@ export function App() {
   };
 
   const sendAgentMessage = async (text: string) => {
+    if (!previewMode && !showWelcome && editorRef.current) {
+      editorRef.current.flushMarkdownToParent();
+    }
+    const liveDoc =
+      !previewMode && !showWelcome && editorRef.current
+        ? editorRef.current.getMarkdown()
+        : doc;
+    const sectionsForAgent =
+      !previewMode && !showWelcome && editorRef.current
+        ? getSectionsFromText(liveDoc)
+        : sections;
+    const sectionsForOutline =
+      previewMode || showWelcome || !editorRef.current
+        ? getSectionsFromText(liveDoc)
+        : (outlineFromEditor ?? getSectionsFromText(liveDoc));
+
     // Auto-accept any undecided proposal before starting a new turn so history stays linear
     // and revert of an older proposal can't corrupt a newer edit.
     setMessages((prev) =>
@@ -533,12 +756,19 @@ export function App() {
     const hasExplicitContext =
       contextSections.length > 0 || mentionDocument || mentionClipboard;
     const autoGrepSections =
-      !hasExplicitContext && doc.trim()
-        ? findRelevantSections(text, sections, 3)
+      !hasExplicitContext && liveDoc.trim()
+        ? findRelevantSections(text, sectionsForAgent, 3)
         : [];
 
+    const contextualPins =
+      contextSections.length > 0 ? resolvePinnedSectionsToLiveDoc(contextSections, liveDoc) : [];
+    const hadAutoGrepBackground =
+      !hasExplicitContext && Boolean(liveDoc.trim()) && autoGrepSections.length > 0;
+
     const effectiveSections = hasExplicitContext
-      ? contextSections
+      ? contextualPins.length > 0
+        ? contextualPins
+        : contextSections
       : autoGrepSections.map((s) => ({
           id: s.id,
           title: s.title,
@@ -549,14 +779,15 @@ export function App() {
 
     const userContent = buildAgentUserPayload({
       instruction: text,
-      fullDocument: doc,
+      fullDocument: liveDoc,
       sections: effectiveSections,
+      documentSections: sectionsForOutline,
       mentionDocument,
       mentionClipboard: mentionClipboard ? clip : null,
     });
 
     const priorDraft = lastAssistantDraft(messages);
-    if (wantsApplyPriorReplyToDoc(text) && priorDraft && isEffectivelyBlankDocument(doc)) {
+    if (wantsApplyPriorReplyToDoc(text) && priorDraft && isEffectivelyBlankDocument(liveDoc)) {
       const userMsg: ChatMessage = { id: `u-${Date.now()}`, role: "user", content: text };
       setMessages((m) => [...m, userMsg]);
       chatHistoryRef.current.push({ role: "user", content: userContent });
@@ -590,24 +821,27 @@ export function App() {
       );
 
       const cleaned = normalizeAssistantMarkdownParagraphs(stripOuterMarkdownCodeFence(full));
-      const blankish = isEffectivelyBlankDocument(doc);
-      const baselineMarkdown = editorRef.current?.getMarkdown() ?? doc;
+      const blankish = isEffectivelyBlankDocument(liveDoc);
+      const baselineMarkdown = liveDoc;
       const wholeDocUnpinned =
-        contextSections.length === 0 &&
+        contextualPins.length === 0 &&
+        !hadAutoGrepBackground &&
         !blankish &&
         looksLikeAssistantDocumentDraft(cleaned);
       const sectionProposal =
-        cleaned && (contextSections.length === 1 || blankish || wholeDocUnpinned)
+        cleaned && (contextualPins.length === 1 || blankish || wholeDocUnpinned)
           ? {
               oldText:
-                blankish ? "" : contextSections.length === 1 ? contextSections[0].content : baselineMarkdown,
+                blankish ? "" : contextualPins.length === 1 ? contextualPins[0].content : baselineMarkdown,
               newText: cleaned,
               sectionTitle:
-                blankish ? "Document" : contextSections.length === 1 ? contextSections[0].title : "Document",
+                blankish ? "Document" : contextualPins.length === 1 ? contextualPins[0].title : "Document",
               // Store the heading's markdown offset so the editor overlay can find the true
               // post-edit span even when the AI adds sub-headings that split the section.
               sectionMarkdownFrom:
-                contextSections.length === 1 ? contextSections[0].from : undefined,
+                contextualPins.length === 1 ? contextualPins[0].from : undefined,
+              sectionMarkdownTo:
+                contextualPins.length === 1 ? contextualPins[0].to : undefined,
             }
           : undefined;
 
@@ -622,7 +856,9 @@ export function App() {
       setStreamingText("");
 
       if (sectionProposal) {
-        applySectionReplacementToEditor(sectionProposal.oldText, sectionProposal.newText);
+        applySectionReplacementToEditor(sectionProposal.oldText, sectionProposal.newText, {
+          replaceHintIndex: sectionProposal.sectionMarkdownFrom,
+        });
         // Fire-and-forget: fetch AI bullet summary and patch the message once ready
         summarizeSectionChanges(
           sectionProposal.oldText,
@@ -652,10 +888,18 @@ export function App() {
   };
 
   const quickAIRun = async (instruction: string) => {
+    if (!previewMode && !showWelcome && editorRef.current) {
+      editorRef.current.flushMarkdownToParent();
+    }
+    const liveDoc =
+      !previewMode && !showWelcome && editorRef.current
+        ? editorRef.current.getMarkdown()
+        : doc;
+    const sectionsLive = getSectionsFromText(liveDoc);
     const cur = editorRef.current?.getCursorMarkdownSection();
     const sec = cur
-      ? sections.find((s) => s.from === cur.from && s.level > 0)
-      : sections.filter((s) => s.level > 0)[0] ?? null;
+      ? sectionsLive.find((s) => s.from === cur.from && s.level > 0)
+      : sectionsLive.filter((s) => s.level > 0)[0] ?? null;
     if (!sec) return;
     setAgentBusy(true);
     try {
@@ -677,7 +921,7 @@ export function App() {
   };
 
   const copyWholeDoc = async () => {
-    await navigator.clipboard.writeText(doc);
+    await navigator.clipboard.writeText(getLiveMarkdown());
     toaster.create({ type: "success", title: "Copied", description: "Entire document copied to clipboard." });
   };
 
@@ -688,7 +932,7 @@ export function App() {
     const base = name.trim().replace(/\.md$/i, "") || "my_template";
     const safe = base.replace(/[^a-zA-Z0-9-_]+/g, "_");
     const path = `${dir}\\${safe}.md`;
-    const r = await api.saveTemplateFile(path, doc);
+    const r = await api.saveTemplateFile(path, getLiveMarkdown());
     if (!r.ok) {
       toaster.create({ type: "error", title: "Save failed", description: r.error });
     } else {
@@ -736,7 +980,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [doc]);
+  }, [doc, getLiveMarkdown]);
 
   const commands: CommandItem[] = useMemo(
     () => [
@@ -854,8 +1098,19 @@ export function App() {
         icon: <ListTree size={14} />,
         run: () =>
           void (async () => {
-            const secs = getSectionsFromText(doc);
+            const md = getLiveMarkdown();
+            const secs = getSectionsFromText(md);
             const onlyRoot = secs.length === 1 && secs[0]?.level === 0;
+            const hasManualBreaks = hasManualSectionMarkersInMarkdown(md);
+            if (hasManualBreaks) {
+              toaster.create({
+                type: "info",
+                title: "Manual section breaks present",
+                description:
+                  "AI auto-section is disabled while <!--markapp-manual-section--> lines exist so they are not removed.",
+              });
+              return;
+            }
             if (!onlyRoot) {
               toaster.create({
                 type: "info",
@@ -866,7 +1121,7 @@ export function App() {
             }
             setAgentBusy(true);
             try {
-              const next = await autoSectionDocument(doc);
+              const next = await autoSectionDocument(md);
               editorRef.current?.setMarkdown(next);
               setDoc(next);
               setDirty(true);
@@ -883,7 +1138,7 @@ export function App() {
           })(),
       },
     ],
-    [doc],
+    [doc, getLiveMarkdown],
   );
 
   const dragRef = useRef<{ startX: number; startW: number } | null>(null);

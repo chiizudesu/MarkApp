@@ -113,7 +113,7 @@ export function ChatInput(props: {
   };
 
   return (
-    <Box position="relative" px={2.5} pb={2} pt={1.5} flexShrink={0}>
+    <Box position="relative" pt={1.5} flexShrink={0}>
       {mentionOpen && (
         <MentionDropdown
           options={mentionOptions}
@@ -127,8 +127,8 @@ export function ChatInput(props: {
         <Box
           position="absolute"
           bottom="100%"
-          left={2.5}
-          right={2.5}
+          left={0}
+          right={0}
           mb={1}
           borderRadius="xl"
           borderWidth="1px"

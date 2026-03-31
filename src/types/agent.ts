@@ -15,6 +15,8 @@ export interface ChatMessage {
      * shrink if the AI adds sub-headings, so we walk to the next peer-level heading instead).
      */
     sectionMarkdownFrom?: number;
+    /** Markdown `to` offset for selection-scoped edits (exclusive). Headings use peer walk instead. */
+    sectionMarkdownTo?: number;
     /** AI-generated bullet points (≤5) summarising what changed. Populated async after streaming. */
     summary?: string[];
     /** Whether the user accepted (true), reverted (false), or hasn't decided yet (undefined). */

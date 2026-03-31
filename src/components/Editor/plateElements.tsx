@@ -241,6 +241,26 @@ export function HrElement(props: PlateElementProps) {
   );
 }
 
+/** Invisible void block; markdown round-trip is `<!--markapp-manual-section-->`. */
+export function MarkappManualSectionElement(props: PlateElementProps) {
+  return (
+    <PlateElement {...props} as="div">
+      <div
+        contentEditable={false}
+        aria-hidden
+        style={{
+          height: 0,
+          margin: 0,
+          padding: 0,
+          overflow: "hidden",
+          pointerEvents: "none",
+        }}
+      />
+      {props.children}
+    </PlateElement>
+  );
+}
+
 export function ImageElement(props: PlateElementProps) {
   const editor = useEditorRef();
   const element = props.element as TMediaElement;

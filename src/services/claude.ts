@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { MessageParam } from "@anthropic-ai/sdk/resources";
 import { requireMarkAPI } from "@/services/markApi";
+import { formatDocumentOutlineForAgent, type DocSection } from "@/services/sectionService";
 
 async function getKey(): Promise<string> {
   const key = (await requireMarkAPI().getStore("anthropicApiKey")) as string | undefined;
@@ -29,15 +30,25 @@ export async function testAnthropicConnection(apiKey: string, model: string): Pr
 const MARKDOWN_AGENT_SYSTEM = `You are a writing assistant inside MarkApp, a markdown editor.
 Every message includes --- CURRENT DOCUMENT --- with what is in the editor (it may be empty or a single placeholder line like "#"). Do not claim you cannot see the document; use that block and the chat history.
 
+When present, --- DOCUMENT OUTLINE (MarkApp) --- lists each logical section: heading level (or preamble before first heading), stable id, title, and character ranges that refer **to the same string** as CURRENT DOCUMENT. Use it for anything about structure: headings, outline, TOC, splitting or merging topics, “optimize/improve/fix sectioning”, hierarchy (# vs ## vs ###), or where a section starts and ends. MarkApp treats each ATX heading as starting a section until the next heading at the same or higher level.
+
+Standalone HTML comment lines \`<!--markapp-manual-section-->\` (spacing inside the tag may vary) are **manual section breaks** the author placed. When you output an updated full document or reorganize structure, **keep every such line** on its own line, in order, between the same surrounding content—never delete them unless the user explicitly asks to remove manual section breaks.
+
+For sectioning / outline tasks: propose sensible ##/### structure (avoid skipping levels without reason), one main idea per section, merge duplicates, add headings where the topic clearly shifts, remove orphan or redundant headings, and **preserve the author’s wording** unless they asked to rewrite prose. Output the **complete updated markdown document** when changing structure across the file (same as a full-document edit).
+
 Help refine, structure, or expand the user's document. Prefer clear, concise markdown.
 When the user asks to apply, insert, or use a prior reply in the document, output the full markdown that should appear in the editor (often the same as your last substantive answer), not a refusal.
 
-When the user asks you to rewrite a specific section, respond with ONLY the replacement markdown for that section — no preamble, no code fences, unless the section itself should contain a fenced block.
+When the user asks you to rewrite a specific section only, respond with ONLY the replacement markdown for that section — no preamble, no code fences, unless the section itself should contain a fenced block.
 For general questions, answer normally in markdown.`;
 
 const SECTION_REPLACE_SYSTEM = `You rewrite a markdown SECTION. Output ONLY the new section text (including its heading line if one should remain). No explanations, no markdown fences around the whole response.`;
 
-const AUTO_SECTION_SYSTEM = `You structure plain markdown by adding ## section headings only. Split the text into clear topical sections. Preserve all original wording and paragraph breaks; insert heading lines (## Title) where appropriate and blank lines around headings. Output the complete markdown document only—no preamble or explanation, no wrapping code fences.`;
+const AUTO_SECTION_SYSTEM = `You structure plain markdown by adding ## section headings only. Split the text into clear topical sections. Preserve all original wording and paragraph breaks; insert heading lines (## Title) where appropriate and blank lines around headings.
+
+MarkApp manual section breaks are standalone HTML comment lines exactly: <!--markapp-manual-section--> (only spacing inside <!-- ... --> may vary). You MUST keep every such line in the output, on its own line, in the same order and in the same relative positions between paragraphs—never delete or merge across them.
+
+Output the complete markdown document only—no preamble or explanation, no wrapping code fences.`;
 
 export async function streamChat(
   system: string,
@@ -204,6 +215,8 @@ export function buildAgentUserPayload(parts: {
   instruction: string;
   fullDocument: string;
   sections: Array<{ id: string; title: string; content: string }>;
+  /** Parsed outline for the same document; drives DOCUMENT OUTLINE so the model is section-aware. */
+  documentSections?: DocSection[];
   mentionDocument?: boolean;
   mentionClipboard?: string | null;
 }): string {
@@ -212,6 +225,11 @@ export function buildAgentUserPayload(parts: {
     ? "--- FULL DOCUMENT (@document) ---"
     : "--- CURRENT DOCUMENT ---";
   blocks.push(docLabel + "\n" + parts.fullDocument);
+  if (parts.documentSections && parts.documentSections.length > 0) {
+    blocks.push(
+      "--- DOCUMENT OUTLINE (MarkApp) ---\n" + formatDocumentOutlineForAgent(parts.documentSections),
+    );
+  }
   for (const s of parts.sections) {
     blocks.push(`--- SECTION ${s.id}: ${s.title} ---\n${s.content}`);
   }
