@@ -1,12 +1,18 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import electron from "vite-plugin-electron/simple";
-import { resolve } from "path";
+import { dirname, resolve } from "path";
 import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
 
-const packageJson = JSON.parse(readFileSync("./package.json", "utf-8")) as { version: string };
+const root = dirname(fileURLToPath(import.meta.url));
+const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf-8")) as {
+  version: string;
+};
 
 export default defineConfig(async () => ({
+  /** Required for Electron `loadFile(dist/index.html)`: absolute `/assets/...` breaks on file://. */
+  base: "./",
   plugins: [
     react(),
     ...(await electron({
@@ -44,7 +50,7 @@ export default defineConfig(async () => ({
     })),
   ],
   resolve: {
-    alias: { "@": resolve(__dirname, "src") },
+    alias: { "@": resolve(root, "src") },
   },
   define: {
     __APP_VERSION__: JSON.stringify(packageJson.version),
@@ -56,5 +62,7 @@ export default defineConfig(async () => ({
   server: {
     open: false,
     hmr: { overlay: false },
+    /** Helps dev HMR / asset URLs when `base` is relative (Electron-style output). */
+    origin: "http://localhost:5173",
   },
 }));

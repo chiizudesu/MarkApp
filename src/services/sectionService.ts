@@ -126,7 +126,11 @@ function plateParagraphPlainText(node: unknown): string {
 }
 
 /**
- * Bold-only top-level paragraphs that may serialize without `**` in markdown (toolbar bold).
+ * Hints so outline markers use the same markdown offsets as Plate prefix serialization:
+ * - Bold-only `p` blocks (toolbar bold may omit `**` in the string).
+ * - ATX heading blocks (`h1`–`h6`): line-based `collectHeadingMarkersFromMarkdown` can sit a few
+ *   characters off `blockStarts[i]` (CRLF, plugin newlines), which breaks gutter block overlap for those
+ *   sections too when not using a literal `#` line in the source sense.
  */
 export function collectBoldOnlyParagraphHints(
   topLevelBlocks: unknown[],
@@ -135,10 +139,20 @@ export function collectBoldOnlyParagraphHints(
   const hints: OutlineBoldBlockHint[] = [];
   const n = topLevelBlocks.length;
   for (let i = 0; i < n; i++) {
-    if (!isBoldOnlyPlateParagraph(topLevelBlocks[i])) continue;
     const mdStart = blockStartOffsets[i];
     if (mdStart === undefined) continue;
-    const title = plateParagraphPlainText(topLevelBlocks[i]);
+    const node = topLevelBlocks[i];
+    const type = (node as { type?: string })?.type;
+
+    if (headingLevelFromType(type) > 0) {
+      const title = plateParagraphPlainText(node);
+      if (title.replace(OUTLINE_BLANK_STRIP, "").trim().length === 0) continue;
+      hints.push({ mdStart, title });
+      continue;
+    }
+
+    if (!isBoldOnlyPlateParagraph(node)) continue;
+    const title = plateParagraphPlainText(node);
     if (title.length < 2 || title.length > 88) continue;
     hints.push({ mdStart, title });
   }
@@ -212,6 +226,41 @@ export function topLevelBlocksIntersectingMarkdownRange(
   let b1 = -1;
   for (let i = 0; i < n; i++) {
     if (blockStarts[i] < secTo && blockStarts[i + 1] > secFrom) {
+      if (b0 < 0) b0 = i;
+      b1 = i;
+    }
+  }
+  if (b0 < 0) return null;
+  return [b0, b1];
+}
+
+/**
+ * Like {@link topLevelBlocksIntersectingMarkdownRange}, but tolerates drift between line-/hint-based
+ * `DocSection.from`/`to` and prefix-serialization block boundaries — otherwise implicit and bold-title
+ * sections often get no gutter strip while `#` headings still match.
+ */
+export function topLevelBlocksIntersectingMarkdownRangeRelaxed(
+  blockStarts: number[],
+  secFrom: number,
+  secTo: number,
+  mdLen: number,
+): [number, number] | null {
+  const strict = topLevelBlocksIntersectingMarkdownRange(blockStarts, secFrom, secTo);
+  if (strict) return strict;
+
+  const n = blockStarts.length - 1;
+  if (n <= 0) return null;
+
+  const slack = 64;
+  const lo = Math.max(0, secFrom - slack);
+  const hi = Math.min(mdLen, secTo + slack);
+
+  let b0 = -1;
+  let b1 = -1;
+  for (let i = 0; i < n; i++) {
+    const a = blockStarts[i] ?? 0;
+    const b = blockStarts[i + 1] ?? mdLen;
+    if (a < hi && b > lo) {
       if (b0 < 0) b0 = i;
       b1 = i;
     }

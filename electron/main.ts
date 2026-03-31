@@ -53,10 +53,22 @@ function ensureUserTemplatesDir(): string {
 let mainWindow: BrowserWindow | null = null;
 let dirtyFlag = false;
 
-function createWindow() {
-  const iconPath = app.isPackaged
+/**
+ * Windows `BrowserWindow` needs a raster. Prefer `icon.png` (export from `public/icon.svg`) so it
+ * matches the in-app SVG; else packaged `build/icons/win/icon.ico` (regenerate from the same SVG).
+ */
+function resolveWindowIconPath(): string {
+  const distPng = join(__dirname, '../dist/icon.png');
+  const publicPng = join(app.getAppPath(), 'public', 'icon.png');
+  if (existsSync(distPng)) return distPng;
+  if (!app.isPackaged && existsSync(publicPng)) return publicPng;
+  return app.isPackaged
     ? join(process.resourcesPath, 'build/icons/win/icon.ico')
     : join(app.getAppPath(), 'build/icons/win/icon.ico');
+}
+
+function createWindow() {
+  const iconPath = resolveWindowIconPath();
 
   mainWindow = new BrowserWindow({
     width: 1280,

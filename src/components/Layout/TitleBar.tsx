@@ -19,6 +19,9 @@ import {
   X,
 } from "lucide-react";
 
+/** Same file as `<link rel="icon" href="./icon.png" />` (public → dist root). Taskbar uses `build/icons/win/icon.ico` — regenerate that .ico from this PNG so they match. */
+const TITLE_BAR_ICON = `${import.meta.env.BASE_URL}icon.png`;
+
 const dragStyle: CSSProperties = { WebkitAppRegion: "drag" };
 const noDragStyle: CSSProperties = { WebkitAppRegion: "no-drag" };
 
@@ -177,7 +180,7 @@ export function TitleBar(props: {
         style={dragStyle}
         userSelect="none"
       >
-        <img src="/icon.png" alt="MarkApp" width={20} height={20} style={{ display: "block", objectFit: "contain" }} />
+        <img src={TITLE_BAR_ICON} alt="MarkApp" width={20} height={20} style={{ display: "block", objectFit: "contain" }} />
       </Flex>
 
       <HStack
