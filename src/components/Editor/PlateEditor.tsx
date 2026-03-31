@@ -18,7 +18,7 @@ import {
   type NodeEntry,
 } from "slate";
 import { MarkdownPlugin } from "@platejs/markdown";
-import { Plate, PlateContent, usePlateEditor, useRedecorate } from "platejs/react";
+import { Plate, PlateContent, usePlateEditor, useRedecorate, type PlateEditor as PlateEditorApi } from "platejs/react";
 import { Menu, Portal, Box, IconButton, Flex, Text, HStack, Spinner, Button } from "@chakra-ui/react";
 import { Plus, Sparkles } from "lucide-react";
 import { modShiftShortcut } from "@/utils/platform";
@@ -197,15 +197,14 @@ const gutterAccentPalette: Record<
 };
 
 /**
- * Sparkle “add to agent” control: soft violet fill on hover; border stays on-violet (theme outline
- * otherwise defaults to a dark neutral).
+ * Sparkle “add to agent” control: soft violet fill on hover only — no border/stroke change so the
+ * outline matches the resting chrome (pinned vs hover palettes set the default border on each button).
  */
 const SPARKLE_BTN_HOVER = {
   bg: "rgba(192, 181, 253, 0.32)",
   boxShadow: "none",
-  borderColor: gutterAccentPalette.pinned.dot,
   "& svg": {
-    color: gutterAccentPalette.pinned.dot,
+    color: "#a855f7",
   },
 } as const;
 
@@ -647,7 +646,7 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
     value: (ed) => ed.getApi(MarkdownPlugin).markdown.deserialize(initialMarkdown),
   });
 
-  const proposalDecorate = useCallback(({ editor: ed, entry }: { editor: SlateEditor; entry: NodeEntry }) => {
+  const proposalDecorate = useCallback(({ entry }: { editor: PlateEditorApi; entry: NodeEntry }) => {
     const [node, path] = entry;
     if (!SlateText.isText(node)) return [];
     const spec = proposalDecorateRef.current;

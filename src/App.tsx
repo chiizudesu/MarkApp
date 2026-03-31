@@ -43,6 +43,7 @@ import {
   hasManualSectionMarkersInMarkdown,
   normOutlineTitleKey,
   type DocSection,
+  type OutlineNode,
 } from "@/services/sectionService";
 import {
   streamAgentTurn,
@@ -718,8 +719,8 @@ export function App() {
     );
   }, [messages]);
 
-  const addSectionToChat = (from: number, _title: string) => {
-    const sec = sections.find((s) => s.from === from);
+  const addSectionToChat = (node: OutlineNode) => {
+    const sec = sections.find((s) => s.id === node.id || s.from === node.from);
     if (!sec) return;
     const ref = sectionToRef(sec);
     setContextSections((prev) => (prev.some((p) => p.id === ref.id) ? prev : [...prev, ref]));
@@ -1215,11 +1216,11 @@ export function App() {
               >
                 <DocumentOutline
                   tree={outline}
-                  activeFrom={activeSectionFrom}
-                  onPick={(from) => {
+                  activeSectionId={sections.find((s) => s.from === activeSectionFrom)?.id ?? null}
+                  onPick={(node) => {
                     lastOutlinePickRef.current = Date.now();
-                    setActiveSectionFrom(from);
-                    editorRef.current?.focusSectionAtMarkdownFrom(from);
+                    setActiveSectionFrom(node.from);
+                    editorRef.current?.focusSectionAtMarkdownFrom(node.from);
                   }}
                   onAddToChat={addSectionToChat}
                 />

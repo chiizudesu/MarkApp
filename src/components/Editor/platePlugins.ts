@@ -326,7 +326,7 @@ export const editorPlugins = [
                 children: [{ text: "" }],
               };
             }
-            return { text: (mdastNode.value || "").replaceAll("<br />", "\n") };
+            return { text: (mdastNode.value || "").split("<br />").join("\n") };
           },
         },
         [MARKAPP_MANUAL_SECTION_BLOCK_TYPE]: {
