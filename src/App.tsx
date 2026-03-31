@@ -41,6 +41,7 @@ import {
   buildOutline,
   findRelevantSections,
   hasManualSectionMarkersInMarkdown,
+  normOutlineTitleKey,
   type DocSection,
 } from "@/services/sectionService";
 import {
@@ -130,14 +131,19 @@ function resolveProposalMarkdownRange(
   }
 
   const storedFrom = p.sectionMarkdownFrom;
+  const titleKey = normOutlineTitleKey(title);
+
   let startSec =
     storedFrom !== undefined
       ? sections.find((s) => s.level > 0 && s.from === storedFrom)
       : undefined;
   if (!startSec) {
-    const sameTitle = sections.filter((s) => s.level > 0 && s.title === title);
-    if (sameTitle.length === 1) startSec = sameTitle[0];
-    else if (sameTitle.length > 1 && storedFrom !== undefined) {
+    const sameTitle = sections.filter(
+      (s) => s.level > 0 && normOutlineTitleKey(s.title) === titleKey,
+    );
+    if (sameTitle.length === 1) {
+      startSec = sameTitle[0];
+    } else if (sameTitle.length > 1 && storedFrom !== undefined) {
       startSec = sameTitle.reduce((best, s) =>
         Math.abs(s.from - storedFrom) < Math.abs(best.from - storedFrom) ? s : best,
       sameTitle[0]!);
@@ -171,23 +177,34 @@ function sectionToRef(s: DocSection): SectionRef {
   };
 }
 
-/** Re-resolve pinned outline sections against live markdown so ids/from/to match after edits (incl. manual sections). */
-function resolvePinnedSectionsToLiveDoc(refs: SectionRef[], liveDoc: string): SectionRef[] {
+/**
+ * Re-resolve pinned outline sections against live markdown so ids/from/to match after edits.
+ * Pass `hintAwareSections` from the editor (bold-only implicit headings) when available so
+ * pins match the same boundaries as the sidebar — plain {@see getSectionsFromText} can disagree
+ * and yield wrong `content`, wiping subsection structure when the agent applies a replace.
+ */
+function resolvePinnedSectionsToLiveDoc(
+  refs: SectionRef[],
+  liveDoc: string,
+  hintAwareSections?: DocSection[] | null,
+): SectionRef[] {
   if (refs.length === 0) return refs;
-  const live = getSectionsFromText(liveDoc).filter((s) => s.level > 0);
+  const useHints = Boolean(hintAwareSections?.some((s) => s.level > 0));
+  const live = (useHints ? hintAwareSections! : getSectionsFromText(liveDoc)).filter((s) => s.level > 0);
   const byId = new Map(live.map((s) => [s.id, s]));
   return refs.map((ref) => {
     const hit = byId.get(ref.id);
     if (hit) return sectionToRef(hit);
     const prefix = ref.content.trim().slice(0, 48);
+    const refTitleKey = normOutlineTitleKey(ref.title);
     const near =
       live.find(
         (s) =>
-          s.title === ref.title &&
+          normOutlineTitleKey(s.title) === refTitleKey &&
           prefix.length > 0 &&
           s.content.slice(0, Math.min(prefix.length + 24, s.content.length)).includes(prefix),
       ) ??
-      live.find((s) => s.title === ref.title) ??
+      live.find((s) => normOutlineTitleKey(s.title) === refTitleKey) ??
       live.find((s) => Math.abs(s.from - ref.from) <= 120 && s.content === ref.content);
     return near ? sectionToRef(near) : ref;
   });
@@ -675,12 +692,9 @@ export function App() {
     if (nextMd == null) {
       const title = msg.sectionProposal.sectionTitle ?? "Section";
       if (title !== "Document") {
-        const liveSections = getSectionsFromText(live);
-        const { sectionFrom, sectionTo } = resolveProposalMarkdownRange(
-          msg.sectionProposal,
-          liveSections,
-          live,
-        );
+        const liveSections = handle.getOutlineDocSections();
+        const resolved = resolveProposalMarkdownRange(msg.sectionProposal, liveSections, live);
+        const { sectionFrom, sectionTo } = resolved;
         if (sectionFrom >= 0) {
           const end = sectionTo < 0 ? live.length : sectionTo;
           if (end >= sectionFrom) {
@@ -723,9 +737,15 @@ export function App() {
       !previewMode && !showWelcome && editorRef.current
         ? editorRef.current.getMarkdown()
         : doc;
+    const editorHintOutline =
+      !previewMode && !showWelcome && editorRef.current
+        ? editorRef.current.getOutlineDocSections()
+        : null;
     const sectionsForAgent =
       !previewMode && !showWelcome && editorRef.current
-        ? getSectionsFromText(liveDoc)
+        ? editorHintOutline?.some((s) => s.level > 0)
+          ? editorHintOutline
+          : getSectionsFromText(liveDoc)
         : sections;
     const sectionsForOutline =
       previewMode || showWelcome || !editorRef.current
@@ -761,7 +781,9 @@ export function App() {
         : [];
 
     const contextualPins =
-      contextSections.length > 0 ? resolvePinnedSectionsToLiveDoc(contextSections, liveDoc) : [];
+      contextSections.length > 0
+        ? resolvePinnedSectionsToLiveDoc(contextSections, liveDoc, editorHintOutline)
+        : [];
     const hadAutoGrepBackground =
       !hasExplicitContext && Boolean(liveDoc.trim()) && autoGrepSections.length > 0;
 
@@ -895,11 +917,15 @@ export function App() {
       !previewMode && !showWelcome && editorRef.current
         ? editorRef.current.getMarkdown()
         : doc;
-    const sectionsLive = getSectionsFromText(liveDoc);
+    const hintOutline = editorRef.current?.getOutlineDocSections() ?? null;
+    const sectionsLive = (hintOutline?.some((s) => s.level > 0) ? hintOutline : getSectionsFromText(liveDoc)).filter(
+      (s) => s.level > 0,
+    );
     const cur = editorRef.current?.getCursorMarkdownSection();
     const sec = cur
-      ? sectionsLive.find((s) => s.from === cur.from && s.level > 0)
-      : sectionsLive.filter((s) => s.level > 0)[0] ?? null;
+      ? sectionsLive.find((s) => s.from === cur.from) ??
+        sectionsLive.find((s) => cur.from >= s.from && cur.from < s.to)
+      : sectionsLive[0] ?? null;
     if (!sec) return;
     setAgentBusy(true);
     try {
@@ -1173,9 +1199,6 @@ export function App() {
             onToggleAgent={() => setAgentOpen((o) => !o)}
             sectionHoverHighlight={sectionHoverHighlight}
             onToggleSectionHoverHighlight={() => setSectionHoverHighlight((v) => !v)}
-            onOpenTemplates={() => { setShowWelcome(false); setTemplatePickerOpen(true); }}
-            onManageTemplates={() => setTemplateMgrOpen(true)}
-            onSaveAsTemplate={() => setSaveTemplateOpen(true)}
           />
         )}
         <Flex flex="1" minH={0} overflow="hidden">

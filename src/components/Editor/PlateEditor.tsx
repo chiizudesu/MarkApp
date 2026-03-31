@@ -24,6 +24,8 @@ import { Plus, Sparkles } from "lucide-react";
 import { modShiftShortcut } from "@/utils/platform";
 import { insertImageFromFiles } from "@platejs/media";
 import { editorPlugins } from "./platePlugins";
+import { TableFloatingToolbar } from "./TableFloatingToolbar";
+import { TextSelectionFloatingToolbar } from "./TextSelectionFloatingToolbar";
 import { bumpEditorFontSize } from "@/utils/editorFontSize";
 import {
   collectBoldOnlyParagraphHints,
@@ -32,6 +34,7 @@ import {
   getSectionBlockIndexRangeForTopLevelIndex,
   getSectionAtPos,
   getSectionForEditorBlock,
+  getSectionsFromText,
   getSectionsFromTextWithBoldBlockHints,
   headingLevelFromType,
   topLevelBlocksIntersectingMarkdownRange,
@@ -493,6 +496,8 @@ export type PlateEditorHandle = {
   focusSectionAtMarkdownFrom: (markdownFrom: number) => void;
   /** Recompute outline sections (bold paragraphs + markdown) and notify App. */
   syncOutlineSections: () => void;
+  /** Same section list as the outline sidebar (ATX + manual + bold-only implicit headings). */
+  getOutlineDocSections: () => DocSection[];
   /** Apply any pending debounced markdown sync to the parent immediately (before save, etc.). */
   flushMarkdownToParent: () => void;
 };
@@ -1206,6 +1211,20 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
       },
       syncOutlineSections: () => {
         syncOutlineSections();
+      },
+      getOutlineDocSections: (): DocSection[] => {
+        try {
+          const children = editor.children as Value;
+          const { md, starts } = getMarkdownBlockStarts();
+          const hints = collectBoldOnlyParagraphHints(children as unknown[], starts);
+          return getSectionsFromTextWithBoldBlockHints(md, hints);
+        } catch {
+          try {
+            return getSectionsFromText(serializeToMarkdown());
+          } catch {
+            return [];
+          }
+        }
       },
       flushMarkdownToParent,
     }),
@@ -2007,6 +2026,8 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
                   </>
                 );
               })()}
+              <TableFloatingToolbar scrollContainerRef={wrapRef} />
+              <TextSelectionFloatingToolbar scrollContainerRef={wrapRef} />
               <PlateContent
                 className="markapp-plate-content markapp-light"
                 placeholder="Start writing..."

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useState, useCallback, useRef, type CSSProperties, type ReactNode } from "react";
 import { Box, IconButton, HStack, Separator, Tooltip, Text, Menu, Button } from "@chakra-ui/react";
 import { ListStyleType, someList, toggleList } from "@platejs/list";
 import {
@@ -14,17 +14,17 @@ import {
   Minus,
   PanelRight,
   Highlighter,
-  FolderOpen,
-  Settings2,
-  FilePlus,
   ChevronDown,
   AlignLeft,
   AlignCenter,
   AlignRight,
   AlignJustify,
+  Image as ImageIcon,
 } from "lucide-react";
+import { insertImage } from "@platejs/media";
 import { Editor } from "slate";
 import type { PlateEditorHandle } from "./PlateEditor";
+import { TableToolbarButton } from "./TableToolbarButton";
 import type { Alignment } from "@platejs/basic-styles";
 import { modShortcut } from "@/utils/platform";
 import { chromeGhostIconProps, quietFocusRing } from "@/components/ui/quietFocusRing";
@@ -35,6 +35,7 @@ import {
   snapFontSizePx,
   nextFontSizeStep,
 } from "@/utils/editorFontSize";
+import { ALL_FONTS, FONT_COLOR_PRESETS, TOP_FONTS } from "./editorFontToolbarData";
 
 // ---------------------------------------------------------------------------
 // Tooltip helper
@@ -177,45 +178,6 @@ const dropdownTriggerProps = {
 } as const;
 
 // ---------------------------------------------------------------------------
-// Font data
-// ---------------------------------------------------------------------------
-const TOP_FONTS = [
-  { name: "Arial", value: "Arial" },
-  { name: "Calibri", value: "Calibri" },
-  { name: "Times New Roman", value: "Times New Roman" },
-];
-
-const ALL_FONTS = [
-  { name: "Arial", value: "Arial" },
-  { name: "Calibri", value: "Calibri" },
-  { name: "Cambria", value: "Cambria" },
-  { name: "Comic Sans MS", value: "Comic Sans MS" },
-  { name: "Consolas", value: "Consolas" },
-  { name: "Courier New", value: "Courier New" },
-  { name: "Georgia", value: "Georgia" },
-  { name: "Impact", value: "Impact" },
-  { name: "Segoe UI", value: "Segoe UI" },
-  { name: "Tahoma", value: "Tahoma" },
-  { name: "Times New Roman", value: "Times New Roman" },
-  { name: "Trebuchet MS", value: "Trebuchet MS" },
-  { name: "Verdana", value: "Verdana" },
-];
-
-/** Preset font colors (toolbar palette) */
-const FONT_COLOR_PRESETS: { label: string; value: string }[] = [
-  { label: "Black", value: "#000000" },
-  { label: "Gray", value: "#4b5563" },
-  { label: "Red", value: "#dc2626" },
-  { label: "Orange", value: "#ea580c" },
-  { label: "Amber", value: "#ca8a04" },
-  { label: "Green", value: "#16a34a" },
-  { label: "Teal", value: "#0d9488" },
-  { label: "Blue", value: "#2563eb" },
-  { label: "Violet", value: "#7c3aed" },
-  { label: "Pink", value: "#db2777" },
-];
-
-// ---------------------------------------------------------------------------
 // Format state
 // ---------------------------------------------------------------------------
 type FmtState = {
@@ -277,19 +239,14 @@ export function EditorToolbar({
   onToggleAgent,
   sectionHoverHighlight,
   onToggleSectionHoverHighlight,
-  onOpenTemplates,
-  onManageTemplates,
-  onSaveAsTemplate,
 }: {
   editorRef: React.RefObject<PlateEditorHandle | null>;
   agentOpen: boolean;
   onToggleAgent: () => void;
   sectionHoverHighlight: boolean;
   onToggleSectionHoverHighlight: () => void;
-  onOpenTemplates?: () => void;
-  onManageTemplates?: () => void;
-  onSaveAsTemplate?: () => void;
 }) {
+  const imageFileInputRef = useRef<HTMLInputElement>(null);
   const [fmt, setFmt] = useState<FmtState>({
     bold: false,
     italic: false,
@@ -414,6 +371,23 @@ export function EditorToolbar({
 
   return (
     <Box borderBottomWidth="1px" px={2} py={0.5} bg="bg.muted" flexShrink={0}>
+      <input
+        ref={imageFileInputRef}
+        type="file"
+        accept="image/*"
+        aria-hidden
+        tabIndex={-1}
+        style={{ position: "absolute", width: 0, height: 0, opacity: 0, pointerEvents: "none" }}
+        onChange={(ev) => {
+          const files = ev.target.files;
+          if (files?.length) {
+            run((e: { tf: { insert: { imageFromFiles: (f: FileList) => void } } }) => {
+              e.tf.insert.imageFromFiles(files);
+            });
+          }
+          ev.target.value = "";
+        }}
+      />
       <HStack gap={0} flexWrap="wrap" align="flex-start" justify="space-between" minH="38px">
 
         {/* ── Left: formatting groups ─────────────────────────────── */}
@@ -793,22 +767,41 @@ export function EditorToolbar({
 
           <Separator orientation="vertical" h="38px" mx={1} />
 
-          {/* ── TEMPLATES group ─────────────────────────────────────── */}
-          <ToolbarGroup label="Templates">
-            <TBarTip label="Open template">
-              <IconButton aria-label="Open template" size="sm" variant="ghost" {...chromeGhostIconProps} onClick={onOpenTemplates}>
-                <FolderOpen size={14} />
-              </IconButton>
+          {/* ── INSERT group (Plate media + table) ──────────────────── */}
+          <ToolbarGroup label="Insert">
+            <TBarTip label="Table — insert grid, merge/split, rows & columns (Plate toolbar)">
+              <TableToolbarButton editorRef={editorRef} onAfterCommand={tick} />
             </TBarTip>
-            <TBarTip label="Manage templates">
-              <IconButton aria-label="Manage templates" size="sm" variant="ghost" {...chromeGhostIconProps} onClick={onManageTemplates}>
-                <Settings2 size={14} />
-              </IconButton>
-            </TBarTip>
-            <TBarTip label="Save as template">
-              <IconButton aria-label="Save as template" size="sm" variant="ghost" {...chromeGhostIconProps} onClick={onSaveAsTemplate}>
-                <FilePlus size={14} />
-              </IconButton>
+            <TBarTip label="Insert image">
+              <Menu.Root>
+                <Menu.Trigger asChild>
+                  <IconButton aria-label="Insert image" size="sm" variant="ghost" {...chromeGhostIconProps}>
+                    <ImageIcon size={14} />
+                  </IconButton>
+                </Menu.Trigger>
+                <Menu.Positioner>
+                  <Menu.Content {...menuContentStyle} minW="160px" py={1}>
+                    <Menu.Item
+                      value="upload"
+                      onSelect={() => {
+                        queueMicrotask(() => imageFileInputRef.current?.click());
+                      }}
+                    >
+                      <Text fontSize="12px">Upload from computer…</Text>
+                    </Menu.Item>
+                    <Menu.Item
+                      value="url"
+                      onSelect={() => {
+                        const url = typeof window !== "undefined" ? window.prompt("Image URL") : null;
+                        const trimmed = url?.trim();
+                        if (trimmed) run((ed) => insertImage(ed, trimmed));
+                      }}
+                    >
+                      <Text fontSize="12px">From URL…</Text>
+                    </Menu.Item>
+                  </Menu.Content>
+                </Menu.Positioner>
+              </Menu.Root>
             </TBarTip>
           </ToolbarGroup>
         </HStack>

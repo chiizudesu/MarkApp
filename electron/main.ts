@@ -15,14 +15,27 @@ type MarkStore = {
   autoSaveMs?: number;
 };
 
+const DEFAULT_AGENT_MODEL = 'claude-haiku-4-5';
+/** Keep in sync with LEGACY_AGENT_MODEL_IDS in src/services/claude.ts */
+const LEGACY_AGENT_MODELS = new Set(['claude-sonnet-4-20250514', 'claude-3-5-haiku-20241022']);
+
 const store = new Store<MarkStore>({
   name: 'markapp',
   defaults: {
     recentFiles: [],
     autoSaveMs: 30000,
-    claudeModel: 'claude-sonnet-4-20250514',
+    claudeModel: DEFAULT_AGENT_MODEL,
   },
 });
+
+function migrateClaudeAgentModel(): void {
+  const cur = store.get('claudeModel');
+  const t = typeof cur === 'string' ? cur.trim() : '';
+  if (!t || LEGACY_AGENT_MODELS.has(t)) {
+    store.set('claudeModel', DEFAULT_AGENT_MODEL);
+  }
+}
+migrateClaudeAgentModel();
 
 function getTemplatesDir(): string {
   if (app.isPackaged) {

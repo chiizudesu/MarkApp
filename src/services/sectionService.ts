@@ -256,12 +256,98 @@ export function deriveContextSectionTitleFromMarkdown(
   return "(Section)";
 }
 
+/** Remove `\r` so CRLF pastes match line-anchored regexes; keep raw `lines` for offset math. */
+function stripCr(s: string): string {
+  return s.replace(/\r/g, "");
+}
+
+/** Outline title for body-only docs: first meaningful line, or collapsed text. */
+function paragraphTitleFromBody(slice: string): string {
+  const lines = stripCr(slice).split("\n");
+  for (const ln of lines) {
+    const t = ln.replace(OUTLINE_BLANK_STRIP, "").trim();
+    if (t.length === 0) continue;
+    if (t.length <= 88) return t;
+    return `${t.slice(0, 85)}…`;
+  }
+  const collapsed = stripCr(slice).replace(/\s+/g, " ").trim();
+  if (collapsed.length === 0) return "(Section)";
+  if (collapsed.length <= 88) return collapsed;
+  return `${collapsed.slice(0, 85)}…`;
+}
+
+/**
+ * When there are no ATX/implicit outline markers, treat the whole document as one section
+ * titled from the first meaningful line (e.g. a pasted blob without `##` headings).
+ */
+function inferSingleBodySectionMarker(doc: string): HeadingMarker[] {
+  if (!stripCr(doc).trim()) return [];
+  return [
+    {
+      level: 2,
+      title: paragraphTitleFromBody(doc),
+      from: 0,
+      line: 0,
+      implicit: true,
+    },
+  ];
+}
+
+function docHasAtxHeadingLine(doc: string): boolean {
+  for (const raw of doc.split("\n")) {
+    const s = stripCr(raw).replace(OUTLINE_BLANK_STRIP, "").trimStart();
+    if (HEADING_RE.test(s)) return true;
+  }
+  return false;
+}
+
+/** Standalone `**x**` / `__x__` lines are intentional outline titles in markdown. */
+function docHasBoldOnlyOutlineLine(doc: string): boolean {
+  for (const raw of doc.split("\n")) {
+    const t = stripCr(raw).replace(OUTLINE_BLANK_STRIP, "").trim();
+    if (/^\*\*[^*]+\*\*$/.test(t) || /^__[^_]+__$/.test(t)) return true;
+  }
+  return false;
+}
+
+/**
+ * Notes/prose with no `##` (and no manual/bold-title lines): one outline row titled from the first line,
+ * instead of many gap-implicit sections on short lines like "Fix".
+ */
+function shouldTreatWholeDocAsOneOutlineSection(doc: string): boolean {
+  if (!stripCr(doc).trim()) return false;
+  if (docHasAtxHeadingLine(doc)) return false;
+  if (hasManualSectionMarkersInMarkdown(doc)) return false;
+  if (docHasBoldOnlyOutlineLine(doc)) return false;
+  return true;
+}
+
+/**
+ * Markdown before the first outline marker (e.g. pasted prose, then a new `##`) is otherwise invisible
+ * to {@link markersToDocSections}. Add one implicit section [0, firstMarker.from).
+ */
+function ensureLeadingPreambleSection(doc: string, deduped: HeadingMarker[]): HeadingMarker[] {
+  if (deduped.length === 0) return deduped;
+  const first = deduped[0]!;
+  if (first.from <= 0) return deduped;
+  const slice = doc.slice(0, first.from);
+  if (!stripCr(slice).trim()) return deduped;
+  const pre: HeadingMarker = {
+    level: 2,
+    title: paragraphTitleFromBody(slice),
+    from: 0,
+    line: -1,
+    implicit: true,
+  };
+  return [pre, ...deduped];
+}
+
 function deriveManualSectionTitle(lines: string[], startLine: number): string {
   for (let k = startLine; k < lines.length; k++) {
     const raw = lines[k] ?? "";
-    const L = raw.replace(OUTLINE_BLANK_STRIP, "").trim();
+    const L = stripCr(raw).replace(OUTLINE_BLANK_STRIP, "").trim();
     if (!L) continue;
-    const hm = raw.replace(OUTLINE_BLANK_STRIP, "").trimStart().match(HEADING_RE);
+    const hm = stripCr(raw).replace(OUTLINE_BLANK_STRIP, "").trimStart().match(HEADING_RE);
     if (hm) return hm[2].trim().slice(0, 88);
     const boldMatch = L.match(/^\*\*([^*]+)\*\*$/) ?? L.match(/^__([^_]+)__$/);
     if (boldMatch) return boldMatch[1].trim().slice(0, 88);
@@ -287,12 +373,12 @@ function collectHeadingMarkersFromMarkdown(
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const trimmedForManual = line.replace(OUTLINE_BLANK_STRIP, "").trim();
+    const trimmedForManual = stripCr(line).replace(OUTLINE_BLANK_STRIP, "").trim();
     if (MANUAL_SECTION_LINE_RE.test(trimmedForManual)) {
       let j = i + 1;
       while (j < lines.length && isOutlineBlankLine(lines[j])) j++;
       if (j >= lines.length) continue;
-      const nextStart = lines[j].replace(OUTLINE_BLANK_STRIP, "").trimStart();
+      const nextStart = stripCr(lines[j] ?? "").replace(OUTLINE_BLANK_STRIP, "").trimStart();
       if (HEADING_RE.test(nextStart)) continue;
 
       skipImplicitBecauseManual.add(j);
@@ -307,7 +393,7 @@ function collectHeadingMarkersFromMarkdown(
       continue;
     }
 
-    const m = line.match(HEADING_RE);
+    const m = stripCr(line).match(HEADING_RE);
     if (m) {
       markers.push({
         level: m[1].length,
@@ -320,7 +406,7 @@ function collectHeadingMarkersFromMarkdown(
 
     if (skipImplicitBecauseManual.has(i)) continue;
 
-    const t = line.replace(OUTLINE_BLANK_STRIP, "").trim();
+    const t = stripCr(line).replace(OUTLINE_BLANK_STRIP, "").trim();
     if (t.length < 2 || t.length > 88) continue;
     if (/^[#>`|]/.test(t)) continue;
     if (/^[-*+]\s/.test(t)) continue;
@@ -440,7 +526,7 @@ function outlineMarkerPriority(m: HeadingMarker, doc: string): number {
   const lines = doc.split("\n");
   const idx = lineIndexAtDocOffset(doc, m.from);
   const raw = lines[idx] ?? "";
-  const t = raw.replace(OUTLINE_BLANK_STRIP, "").trim();
+  const t = stripCr(raw).replace(OUTLINE_BLANK_STRIP, "").trim();
   const isBoldMdLine =
     /^\*\*[^*]+\*\*$/.test(t) ||
     /^__[^_]+__$/.test(t);
@@ -522,9 +608,11 @@ function markersToDocSections(deduped: HeadingMarker[], doc: string): DocSection
     const start = h.from;
     const end = i + 1 < deduped.length ? deduped[i + 1].from : doc.length;
     const id =
-      h.line >= 0
-        ? `sec-${h.line}-${h.level}${h.implicit ? "i" : ""}${h.manual ? "m" : ""}`
-        : `sec-hint-${h.from}-${h.level}i`;
+      h.line === -1 && h.implicit
+        ? `sec-preamble-${end}`
+        : h.line >= 0
+          ? `sec-${h.line}-${h.level}${h.implicit ? "i" : ""}${h.manual ? "m" : ""}`
+          : `sec-hint-${h.from}-${h.level}i`;
     sections.push({
       id,
       title: h.title,
@@ -545,7 +633,16 @@ function markersToDocSections(deduped: HeadingMarker[], doc: string): DocSection
  */
 export function getSectionsFromText(doc: string): DocSection[] {
   const { deduped: raw } = collectHeadingMarkersFromMarkdown(doc);
-  const deduped = postProcessOutlineMarkers(doc, raw);
+  let deduped = postProcessOutlineMarkers(doc, raw);
+  if (shouldTreatWholeDocAsOneOutlineSection(doc)) {
+    deduped = inferSingleBodySectionMarker(doc);
+  } else {
+    if (deduped.length === 0 && stripCr(doc).trim().length > 0) {
+      deduped = inferSingleBodySectionMarker(doc);
+    } else if (deduped.length > 0) {
+      deduped = ensureLeadingPreambleSection(doc, deduped);
+    }
+  }
 
   if (deduped.length === 0) {
     return [
@@ -569,12 +666,22 @@ export function getSectionsFromTextWithBoldBlockHints(doc: string, hints: Outlin
   const merged = mergeBoldBlockHints(d0, hints, doc);
   const afterPost = postProcessOutlineMarkers(doc, merged);
 
-  const deduped: HeadingMarker[] = [];
+  let deduped: HeadingMarker[] = [];
   const seenFrom = new Set<number>();
   for (const mk of afterPost) {
     if (seenFrom.has(mk.from)) continue;
     seenFrom.add(mk.from);
     deduped.push(mk);
+  }
+
+  if (hints.length === 0 && shouldTreatWholeDocAsOneOutlineSection(doc)) {
+    deduped = inferSingleBodySectionMarker(doc);
+  } else {
+    if (deduped.length === 0 && stripCr(doc).trim().length > 0) {
+      deduped = inferSingleBodySectionMarker(doc);
+    } else if (deduped.length > 0) {
+      deduped = ensureLeadingPreambleSection(doc, deduped);
+    }
   }
 
   if (deduped.length === 0) {
@@ -600,7 +707,30 @@ export function getSectionAtPos(sections: DocSection[], pos: number): DocSection
   return sections.length ? sections[sections.length - 1] : null;
 }
 
-function normOutlineTitleKey(s: string): string {
+/**
+ * Sidebar / outline row uses a section’s markdown `from`; Plate serialize can differ by a few chars.
+ * Prefer exact `from`, then strict containment, then nearest start within slack, then {@link getSectionAtPos}.
+ */
+export function findDocSectionForOutlineMarkdownFrom(
+  docSections: DocSection[],
+  markdownFrom: number,
+): DocSection | undefined {
+  const lvl = docSections.filter((s) => s.level > 0);
+  const exact = lvl.find((s) => s.from === markdownFrom);
+  if (exact) return exact;
+  const inside = lvl.find((s) => markdownFrom > s.from && markdownFrom < s.to);
+  if (inside) return inside;
+  const slack = 16;
+  const near = lvl
+    .map((s) => ({ s, d: Math.abs(s.from - markdownFrom) }))
+    .filter((x) => x.d <= slack)
+    .sort((a, b) => a.d - b.d);
+  if (near[0]) return near[0].s;
+  return getSectionAtPos(docSections, markdownFrom) ?? undefined;
+}
+
+/** Normalized key for comparing outline titles (invisible chars, trim, case). */
+export function normOutlineTitleKey(s: string): string {
   return s.replace(OUTLINE_BLANK_STRIP, "").trim().toLowerCase();
 }
 

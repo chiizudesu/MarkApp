@@ -3,6 +3,21 @@ import type { MessageParam } from "@anthropic-ai/sdk/resources";
 import { requireMarkAPI } from "@/services/markApi";
 import { formatDocumentOutlineForAgent, type DocSection } from "@/services/sectionService";
 
+/** Used when Settings has no stored model (empty store / first run). */
+export const DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5";
+
+/** Prior defaults / old Haiku id → migrate existing installs to {@link DEFAULT_CLAUDE_MODEL}. */
+const LEGACY_AGENT_MODEL_IDS = new Set([
+  "claude-sonnet-4-20250514",
+  "claude-3-5-haiku-20241022",
+]);
+
+export function normalizeStoredClaudeModel(stored: string | undefined): string {
+  const t = stored?.trim();
+  if (!t || LEGACY_AGENT_MODEL_IDS.has(t)) return DEFAULT_CLAUDE_MODEL;
+  return t;
+}
+
 async function getKey(): Promise<string> {
   const key = (await requireMarkAPI().getStore("anthropicApiKey")) as string | undefined;
   if (!key?.trim()) throw new Error("Anthropic API key not set. Open Settings.");
@@ -11,14 +26,14 @@ async function getKey(): Promise<string> {
 
 async function getModel(): Promise<string> {
   const m = (await requireMarkAPI().getStore("claudeModel")) as string | undefined;
-  return m?.trim() || "claude-sonnet-4-20250514";
+  return normalizeStoredClaudeModel(m);
 }
 
 /** Minimal request to verify API key + model (Settings “Test”). */
 export async function testAnthropicConnection(apiKey: string, model: string): Promise<void> {
   const key = apiKey.trim();
   if (!key) throw new Error("Enter an API key first.");
-  const m = model.trim() || "claude-sonnet-4-20250514";
+  const m = model.trim() || DEFAULT_CLAUDE_MODEL;
   const c = new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true });
   await c.messages.create({
     model: m,

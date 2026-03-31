@@ -1,0 +1,27 @@
+{"sessionId":"e94c63","location":"electron/main.ts:post-import","message":"main module loaded","data":{"pid":29260,"execPath":"C:\\Dev\\MarkApp\\node_modules\\electron\\dist\\electron.exe","cwd":"C:\\Dev\\MarkApp"},"timestamp":1774974592422,"hypothesisId":"H1"}
+{"sessionId":"e94c63","location":"electron/main.ts:post-migrate","message":"store+migrate ok","data":{},"timestamp":1774974592459,"hypothesisId":"H3"}
+{"sessionId":"e94c63","location":"electron/main.ts:app-ready","message":"app.whenReady fired","data":{},"timestamp":1774974592500,"hypothesisId":"H1"}
+{"sessionId":"e94c63","location":"electron/main.ts:createWindow","message":"enter","data":{"useNativeTitleBarCaption":true},"timestamp":1774974592502,"hypothesisId":"H1"}
+{"sessionId":"e94c63","location":"electron/main.ts:post-import","message":"main module loaded","data":{"pid":36044,"execPath":"C:\\Dev\\MarkApp\\node_modules\\electron\\dist\\electron.exe","cwd":"C:\\Dev\\MarkApp"},"timestamp":1774974593982,"hypothesisId":"H1"}
+{"sessionId":"e94c63","location":"electron/main.ts:post-migrate","message":"store+migrate ok","data":{},"timestamp":1774974594021,"hypothesisId":"H3"}
+{"sessionId":"e94c63","location":"electron/main.ts:app-ready","message":"app.whenReady fired","data":{},"timestamp":1774974594065,"hypothesisId":"H1"}
+{"sessionId":"e94c63","location":"electron/main.ts:createWindow","message":"enter","data":{"useNativeTitleBarCaption":true},"timestamp":1774974594066,"hypothesisId":"H1"}
+{"sessionId":"e94c63","location":"vite.config.ts:configureServer","message":"configureServer registered","data":{},"timestamp":1774974594602,"hypothesisId":"H2"}
+{"sessionId":"e94c63","location":"vite.config.ts:listening","message":"renderer vite listening","data":{"distElectronExists":true,"distElectronFiles":["main.js","preload.js"],"port":5173},"timestamp":1774974594617,"hypothesisId":"H4"}
+{"sessionId":"e94c63","location":"vite.config.ts:listening+tick","message":"post-listen microtask dist snapshot","data":{"distElectronFiles":["main.js","preload.js"]},"timestamp":1774974594619,"hypothesisId":"H4"}
+{"sessionId":"e94c63","location":"vite.config.ts:configureServer","message":"configureServer registered","data":{},"timestamp":1774974594963,"hypothesisId":"H2"}
+{"sessionId":"e94c63","location":"vite.config.ts:listening","message":"renderer vite listening","data":{"distElectronExists":true,"distElectronFiles":["main.js","preload.js"],"port":5173},"timestamp":1774974594981,"hypothesisId":"H4"}
+{"sessionId":"e94c63","location":"vite.config.ts:listening+tick","message":"post-listen microtask dist snapshot","data":{"distElectronFiles":["main.js","preload.js"]},"timestamp":1774974594982,"hypothesisId":"H4"}
+{"sessionId":"e94c63","location":"electron/main.ts:post-import","message":"main module loaded","data":{"pid":20848,"execPath":"C:\\Dev\\MarkApp\\node_modules\\electron\\dist\\electron.exe","cwd":"C:\\Dev\\MarkApp"},"timestamp":1774974595245,"hypothesisId":"H1"}
+{"sessionId":"e94c63","location":"electron/main.ts:post-import","message":"main module loaded","data":{"pid":37904,"execPath":"C:\\Dev\\MarkApp\\node_modules\\electron\\dist\\electron.exe","cwd":"C:\\Dev\\MarkApp"},"timestamp":1774974595545,"hypothesisId":"H1"}
+{"sessionId":"e94c63","location":"electron/main.ts:post-migrate","message":"store+migrate ok","data":{},"timestamp":1774974595579,"hypothesisId":"H3"}
+{"sessionId":"e94c63","location":"electron/main.ts:app-ready","message":"app.whenReady fired","data":{},"timestamp":1774974595623,"hypothesisId":"H1"}
+{"sessionId":"e94c63","location":"electron/main.ts:createWindow","message":"enter","data":{"useNativeTitleBarCaption":true},"timestamp":1774974595624,"hypothesisId":"H1"}
+{"sessionId":"e94c63","location":"vite.config.ts:configureServer","message":"configureServer registered","data":{},"timestamp":1774974626567,"hypothesisId":"H2"}
+{"sessionId":"e94c63","location":"vite.config.ts:listening","message":"renderer vite listening","data":{"distElectronExists":true,"distElectronFiles":["main.js","preload.js"],"port":5173},"timestamp":1774974626587,"hypothesisId":"H4"}
+{"sessionId":"e94c63","location":"vite.config.ts:listening+tick","message":"post-listen microtask dist snapshot","data":{"distElectronFiles":["main.js","preload.js"]},"timestamp":1774974626588,"hypothesisId":"H4"}
+{"sessionId":"e94c63","location":"electron/main.ts:post-import","message":"main module loaded","data":{"pid":17168,"execPath":"C:\\Dev\\MarkApp\\node_modules\\electron\\dist\\electron.exe","cwd":"C:\\Dev\\MarkApp"},"timestamp":1774974626854,"hypothesisId":"H1"}
+{"sessionId":"e94c63","location":"electron/main.ts:post-import","message":"main module loaded","data":{"pid":18340,"execPath":"C:\\Dev\\MarkApp\\node_modules\\electron\\dist\\electron.exe","cwd":"C:\\Dev\\MarkApp"},"timestamp":1774974627174,"hypothesisId":"H1"}
+{"sessionId":"e94c63","location":"electron/main.ts:post-migrate","message":"store+migrate ok","data":{},"timestamp":1774974627208,"hypothesisId":"H3"}
+{"sessionId":"e94c63","location":"electron/main.ts:app-ready","message":"app.whenReady fired","data":{},"timestamp":1774974627250,"hypothesisId":"H1"}
+{"sessionId":"e94c63","location":"electron/main.ts:createWindow","message":"enter","data":{"useNativeTitleBarCaption":true},"timestamp":1774974627251,"hypothesisId":"H1"}

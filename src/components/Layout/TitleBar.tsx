@@ -13,6 +13,10 @@ import {
   Settings,
   Sun,
   Moon,
+  Minus,
+  Square,
+  Copy,
+  X,
 } from "lucide-react";
 
 const dragStyle: CSSProperties = { WebkitAppRegion: "drag" };
@@ -29,27 +33,9 @@ const menuContentStyle = {
 /** Match toolbar: menus open below trigger, trailing edge aligned (LTR). */
 const titleBarMenuPositioning = { placement: "bottom-end" as const };
 
-/** Diagonals read heavier than horizontal 1px lines; sub-1 stroke helps match minimize/maximize weight. */
-function CaptionCloseGlyph() {
-  return (
-    <svg
-      width={10}
-      height={10}
-      viewBox="0 0 10 10"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden
-      style={{ display: "block", flexShrink: 0 }}
-    >
-      <path
-        d="M2.5 2.5 L7.5 7.5 M7.5 2.5 L2.5 7.5"
-        stroke="currentColor"
-        strokeWidth={0.5}
-        strokeLinecap="butt"
-      />
-    </svg>
-  );
-}
+/** Lucide at fixed size so caption glyphs stay visible on high-DPI Windows (thin 1px/CSS lines were effectively missing). */
+const captionIconSize = 11;
+const captionIconStroke = 1.5;
 
 function WindowControls(props: { maximized: boolean }) {
   const api = window.markAPI;
@@ -73,30 +59,9 @@ function WindowControls(props: { maximized: boolean }) {
   };
 
   const maximizeGlyph = props.maximized ? (
-    <Box position="relative" w="10px" h="10px" flexShrink={0} aria-hidden>
-      <Box
-        position="absolute"
-        top="0px"
-        right="0px"
-        w="7px"
-        h="7px"
-        border="1px solid"
-        borderColor="currentColor"
-        bg="transparent"
-      />
-      <Box
-        position="absolute"
-        bottom="0px"
-        left="0px"
-        w="7px"
-        h="7px"
-        border="1px solid"
-        borderColor="currentColor"
-        bg="transparent"
-      />
-    </Box>
+    <Copy size={captionIconSize} strokeWidth={captionIconStroke} aria-hidden />
   ) : (
-    <Box w="10px" h="10px" border="1px solid" borderColor="currentColor" bg="transparent" flexShrink={0} aria-hidden />
+    <Square size={captionIconSize} strokeWidth={captionIconStroke} aria-hidden />
   );
 
   return (
@@ -108,7 +73,7 @@ function WindowControls(props: { maximized: boolean }) {
         aria-label="Minimize"
         onClick={() => api.windowMinimize()}
       >
-        <Box w="10px" h="1px" bg="currentColor" borderRadius="1px" flexShrink={0} aria-hidden />
+        <Minus size={captionIconSize} strokeWidth={captionIconStroke} aria-hidden />
       </IconButton>
 
       <Box
@@ -137,7 +102,7 @@ function WindowControls(props: { maximized: boolean }) {
         onClick={() => api.windowClose()}
         _hover={{ bg: "red.600", color: "white" }}
       >
-        <CaptionCloseGlyph />
+        <X size={captionIconSize} strokeWidth={captionIconStroke} aria-hidden />
       </IconButton>
     </HStack>
   );
@@ -212,7 +177,7 @@ export function TitleBar(props: {
         style={dragStyle}
         userSelect="none"
       >
-        <img src="./icon.png" alt="MarkApp" width={20} height={20} style={{ display: "block", objectFit: "contain" }} />
+        <img src="/icon.png" alt="MarkApp" width={20} height={20} style={{ display: "block", objectFit: "contain" }} />
       </Flex>
 
       <HStack
@@ -309,7 +274,7 @@ export function TitleBar(props: {
           </IconButton>
         </TTip>
 
-        <TTip label="More — Save as, templates, settings, theme">
+        <TTip label="More — Save as, templates, theme">
           <Menu.Root positioning={titleBarMenuPositioning}>
             <Menu.Trigger asChild>
               <IconButton
@@ -339,12 +304,6 @@ export function TitleBar(props: {
                   <HStack gap={2}>
                     <LayoutTemplate size={14} />
                     <Text fontSize="sm">Template manager</Text>
-                  </HStack>
-                </Menu.Item>
-                <Menu.Item value="settings" onSelect={() => props.onSettings()}>
-                  <HStack gap={2}>
-                    <Settings size={14} />
-                    <Text fontSize="sm">Settings</Text>
                   </HStack>
                 </Menu.Item>
                 <Menu.Separator />
@@ -384,7 +343,19 @@ export function TitleBar(props: {
         </Text>
       </Flex>
 
-      <HStack gap={0} pr={0} flexShrink={0} align="center" style={noDragStyle}>
+      <HStack gap={3} pr={0} flexShrink={0} align="center" style={noDragStyle}>
+        <TTip label="Settings">
+          <IconButton
+            aria-label="Settings"
+            size="sm"
+            variant="ghost"
+            {...chromeGhostIconProps}
+            onClick={() => props.onSettings()}
+            css={{ _icon: { boxSize: "4" } }}
+          >
+            <Settings size={16} />
+          </IconButton>
+        </TTip>
         <WindowControls maximized={maximized} />
       </HStack>
       </Flex>

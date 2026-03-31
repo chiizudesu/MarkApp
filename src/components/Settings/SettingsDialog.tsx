@@ -12,11 +12,11 @@ import {
   Separator,
 } from "@chakra-ui/react";
 import { openDirectoryDialog } from "@/services/documentService";
-import { testAnthropicConnection } from "@/services/claude";
+import { DEFAULT_CLAUDE_MODEL, normalizeStoredClaudeModel, testAnthropicConnection } from "@/services/claude";
 
 const MODELS = [
   { value: "claude-sonnet-4-20250514", label: "Claude Sonnet 4" },
-  { value: "claude-3-5-haiku-20241022", label: "Claude 3.5 Haiku" },
+  { value: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
   { value: "claude-opus-4-20250514", label: "Claude Opus 4" },
 ];
 
@@ -30,7 +30,7 @@ const AUTO_SAVE_OPTIONS = [
 
 export function SettingsDialog(props: { open: boolean; onClose: () => void }) {
   const [key, setKey] = useState("");
-  const [model, setModel] = useState(MODELS[0].value);
+  const [model, setModel] = useState(DEFAULT_CLAUDE_MODEL);
   const [autoSaveMs, setAutoSaveMs] = useState(30_000);
   const [templateFolder, setTemplateFolder] = useState("");
   const [testing, setTesting] = useState(false);
@@ -45,7 +45,11 @@ export function SettingsDialog(props: { open: boolean; onClose: () => void }) {
       const k = (await api.getStore("anthropicApiKey")) as string | undefined;
       setKey(k ?? "");
       const m = (await api.getStore("claudeModel")) as string | undefined;
-      if (m) setModel(m);
+      const normalized = normalizeStoredClaudeModel(m);
+      setModel(normalized);
+      if (normalized !== (m?.trim() ?? "")) {
+        await api.setStore("claudeModel", normalized);
+      }
       const a = (await api.getStore("autoSaveMs")) as number | undefined;
       if (a != null) setAutoSaveMs(a);
       const t = (await api.getStore("templateFolderPath")) as string | undefined;

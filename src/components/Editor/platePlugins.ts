@@ -37,7 +37,7 @@ import { ListPlugin } from "@platejs/list/react";
 import { ImagePlugin } from "@platejs/media/react";
 import { MarkdownPlugin, remarkMdx } from "@platejs/markdown";
 import { all, createLowlight } from "lowlight";
-import { Text, type Descendant } from "slate";
+import { Element, Text, type Descendant } from "slate";
 import { createSlatePlugin, KEYS } from "platejs";
 import { ParagraphPlugin, toPlatePlugin } from "platejs/react";
 
@@ -67,6 +67,7 @@ import {
   UnderlineLeaf,
   StrikethroughLeaf,
 } from "./plateElements";
+import { tableKitPlugins } from "./plugins/tableKit";
 
 const MANUAL_SECTION_HTML_COMMENT_RE = /^<!--\s*markapp-manual-section\s*-->$/i;
 
@@ -249,6 +250,35 @@ export const editorPlugins = [
     inject: { targetPlugins: listIndentInjectTargets },
     render: { belowNodes: BlockList },
   }),
+
+  ...tableKitPlugins,
+
+  /** Plate table selection indices require a stable `id` on each td/th. */
+  toPlatePlugin(
+    createSlatePlugin({
+      key: "markappTableCellIds",
+    }).overrideEditor(({ editor, tf: { normalizeNode } }) => ({
+      transforms: {
+        normalizeNode(entry, options) {
+          const [node, path] = entry;
+          if (
+            Element.isElement(node) &&
+            path.length > 0 &&
+            (node.type === editor.getType(KEYS.td) || node.type === editor.getType(KEYS.th)) &&
+            !(node as { id?: string }).id
+          ) {
+            const id =
+              typeof crypto !== "undefined" && "randomUUID" in crypto
+                ? crypto.randomUUID()
+                : `tc_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+            editor.tf.setNodes({ id }, { at: path });
+            return;
+          }
+          return normalizeNode(entry, options);
+        },
+      },
+    })),
+  ),
 
   ImagePlugin.configure({
     node: { component: ImageElement },

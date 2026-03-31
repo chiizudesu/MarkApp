@@ -35,9 +35,9 @@ function OutlineTitle({ markdown }: { markdown: string }) {
 function OutlineItems(props: {
   nodes: OutlineNode[];
   depth: number;
-  activeFrom: number | null;
-  onPick: (from: number, title: string) => void;
-  onAddToChat: (from: number, title: string) => void;
+  activeSectionId: string | null;
+  onPick: (node: OutlineNode) => void;
+  onAddToChat: (node: OutlineNode) => void;
 }) {
   return (
     <>
@@ -46,9 +46,9 @@ function OutlineItems(props: {
           key={n.id}
           title={n.title}
           depth={0}
-          active={props.activeFrom === n.from}
-          onPick={() => props.onPick(n.from, n.title)}
-          onAddToChat={() => props.onAddToChat(n.from, n.title)}
+          active={props.activeSectionId !== null && props.activeSectionId === n.id}
+          onPick={() => props.onPick(n)}
+          onAddToChat={() => props.onAddToChat(n)}
         />
       ))}
     </>
@@ -108,9 +108,9 @@ function HStackRow(props: {
 
 export function DocumentOutline(props: {
   tree: OutlineNode[];
-  activeFrom: number | null;
-  onPick: (from: number, title: string) => void;
-  onAddToChat: (from: number, title: string) => void;
+  activeSectionId: string | null;
+  onPick: (node: OutlineNode) => void;
+  onAddToChat: (node: OutlineNode) => void;
 }) {
   const [open, setOpen] = useState(true);
 
@@ -179,7 +179,7 @@ export function DocumentOutline(props: {
           <OutlineItems
             nodes={props.tree}
             depth={0}
-            activeFrom={props.activeFrom}
+            activeSectionId={props.activeSectionId}
             onPick={props.onPick}
             onAddToChat={props.onAddToChat}
           />
