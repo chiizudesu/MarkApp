@@ -467,7 +467,13 @@ function ProposalScopeEdgeBars(props: {
 }
 
 /** How long to wait after typing before syncing markdown + outline to React app state (avoids whole-app re-renders per keystroke). */
-const MARKDOWN_PARENT_DEBOUNCE_MS = 110;
+const MARKDOWN_PARENT_DEBOUNCE_MS = 220;
+
+/**
+ * Parsing block starts + section map for gutter / pinned band uses O(n) markdown prefix serialization.
+ * Debounce when only document content changed so typing stays responsive; outline pick / hover still flush at 0ms.
+ */
+const EDITOR_LAYOUT_DEBOUNCE_MS = 100;
 
 /**
  * Prefer plain text for paste; fall back to stripping HTML so Slate never ingests raw web markup
@@ -615,6 +621,8 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
   const boldHintsRef = useRef<OutlineBoldBlockHint[]>([]);
   /** Browser timers are `number`; avoid `NodeJS.Timeout` from merged typings. */
   const parentSyncTimerRef = useRef<number | null>(null);
+  const lastPinnedActiveFromRef = useRef<number | null | undefined>(undefined);
+  const lastGutterHoverPinnedSigRef = useRef<string>("");
   const proposalDecorateRef = useRef<ProposalDecorateSpec>({ enabled: false });
   useEffect(() => {
     hoverRegionRef.current = hoverRegion;
@@ -895,43 +903,55 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
     [editor],
   );
 
-  // Defer after paint so typing isn’t blocked by layout reads + section parsing on every Slate update.
+  // Defer after paint; debounce when only the document changed so prefix serialization does not run every keystroke.
   useEffect(() => {
     if (activeSectionMarkdownFrom == null) {
+      lastPinnedActiveFromRef.current = null;
       setPinnedRegion(null);
       setPinnedSectionBlocks(null);
       return;
     }
-    try {
-      const children = editor.children as Value;
-      const { md, starts } = getMarkdownBlockStarts();
-      const hints = collectBoldOnlyParagraphHints(children as unknown[], starts);
-      const docSections = getSectionsFromTextWithBoldBlockHints(md, hints);
-      const sec =
-        docSections.find((s) => s.level > 0 && s.from === activeSectionMarkdownFrom) ??
-        getSectionAtPos(docSections, activeSectionMarkdownFrom);
-      if (!sec || sec.level <= 0) {
+    const activeBumped = lastPinnedActiveFromRef.current !== activeSectionMarkdownFrom;
+    lastPinnedActiveFromRef.current = activeSectionMarkdownFrom;
+    const delay = activeBumped ? 0 : EDITOR_LAYOUT_DEBOUNCE_MS;
+    let cancelled = false;
+    const id = window.setTimeout(() => {
+      if (cancelled) return;
+      try {
+        const children = editor.children as Value;
+        const { md, starts } = getMarkdownBlockStarts();
+        const hints = collectBoldOnlyParagraphHints(children as unknown[], starts);
+        const docSections = getSectionsFromTextWithBoldBlockHints(md, hints);
+        const sec =
+          docSections.find((s) => s.level > 0 && s.from === activeSectionMarkdownFrom) ??
+          getSectionAtPos(docSections, activeSectionMarkdownFrom);
+        if (!sec || sec.level <= 0) {
+          setPinnedRegion(null);
+          setPinnedSectionBlocks(null);
+          return;
+        }
+        const span = topLevelBlocksIntersectingMarkdownRange(starts, sec.from, sec.to);
+        if (!span) {
+          setPinnedRegion(null);
+          setPinnedSectionBlocks(null);
+          return;
+        }
+        const [b0, b1] = trimBlockSpanToSection(
+          span[0], span[1],
+          children as Array<{ type?: string }>,
+          starts, sec, docSections,
+        );
+        setPinnedSectionBlocks({ b0, b1 });
+        setPinnedRegion(layoutRegionForBlockRange(b0, b1, 6));
+      } catch {
         setPinnedRegion(null);
         setPinnedSectionBlocks(null);
-        return;
       }
-      const span = topLevelBlocksIntersectingMarkdownRange(starts, sec.from, sec.to);
-      if (!span) {
-        setPinnedRegion(null);
-        setPinnedSectionBlocks(null);
-        return;
-      }
-      const [b0, b1] = trimBlockSpanToSection(
-        span[0], span[1],
-        children as Array<{ type?: string }>,
-        starts, sec, docSections,
-      );
-      setPinnedSectionBlocks({ b0, b1 });
-      setPinnedRegion(layoutRegionForBlockRange(b0, b1, 6));
-    } catch {
-      setPinnedRegion(null);
-      setPinnedSectionBlocks(null);
-    }
+    }, delay);
+    return () => {
+      cancelled = true;
+      clearTimeout(id);
+    };
   }, [
     activeSectionMarkdownFrom,
     editor.children,
@@ -1064,43 +1084,53 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
     return () => window.removeEventListener("keydown", onKey, true);
   }, [proposalInline, onProposalAccept, onProposalRevert]);
 
-  /** rAF-deferred: avoids synchronous serialize + DOM measurement on every Slate commit during typing. */
+  /** rAF + debounce: serializing all block prefixes for gutters is expensive; skip until typing pauses unless hover/pin changed. */
   useEffect(() => {
     if (!sectionHoverHighlight) {
+      lastGutterHoverPinnedSigRef.current = "";
       setDocumentGutterMarks([]);
       return;
     }
+    const sig = `${hoverSectionBlocks?.b0 ?? "—"}:${hoverSectionBlocks?.b1 ?? "—"}|${pinnedSectionBlocks?.b0 ?? "—"}:${pinnedSectionBlocks?.b1 ?? "—"}`;
+    const hoverPinBumped = sig !== lastGutterHoverPinnedSigRef.current;
+    lastGutterHoverPinnedSigRef.current = sig;
+    const delay = hoverPinBumped ? 0 : EDITOR_LAYOUT_DEBOUNCE_MS;
     let cancelled = false;
-    const raf = requestAnimationFrame(() => {
+    let rafId = 0;
+    const timerId = window.setTimeout(() => {
       if (cancelled) return;
-      const pageEl = pageRef.current;
-      if (!pageEl) {
-        setDocumentGutterMarks([]);
-        return;
-      }
-      try {
-        const children = editor.children as Value;
-        const { md, starts } = getMarkdownBlockStarts();
-        const hints = collectBoldOnlyParagraphHints(children as unknown[], starts);
-        const docSections = getSectionsFromTextWithBoldBlockHints(md, hints);
-        setDocumentGutterMarks(
-          buildDocumentSectionGutterMarks({
-            editor: editor as { api: { toDOMNode: (n: unknown) => HTMLElement | null } },
-            pr: pageEl.getBoundingClientRect(),
-            children,
-            starts,
-            docSections,
-            hoverBlocks: hoverSectionBlocks,
-            pinnedBlocks: pinnedSectionBlocks,
-          }),
-        );
-      } catch {
-        setDocumentGutterMarks([]);
-      }
-    });
+      rafId = requestAnimationFrame(() => {
+        if (cancelled) return;
+        const pageEl = pageRef.current;
+        if (!pageEl) {
+          setDocumentGutterMarks([]);
+          return;
+        }
+        try {
+          const children = editor.children as Value;
+          const { md, starts } = getMarkdownBlockStarts();
+          const hints = collectBoldOnlyParagraphHints(children as unknown[], starts);
+          const docSections = getSectionsFromTextWithBoldBlockHints(md, hints);
+          setDocumentGutterMarks(
+            buildDocumentSectionGutterMarks({
+              editor: editor as { api: { toDOMNode: (n: unknown) => HTMLElement | null } },
+              pr: pageEl.getBoundingClientRect(),
+              children,
+              starts,
+              docSections,
+              hoverBlocks: hoverSectionBlocks,
+              pinnedBlocks: pinnedSectionBlocks,
+            }),
+          );
+        } catch {
+          setDocumentGutterMarks([]);
+        }
+      });
+    }, delay);
     return () => {
       cancelled = true;
-      cancelAnimationFrame(raf);
+      clearTimeout(timerId);
+      if (rafId) cancelAnimationFrame(rafId);
     };
   }, [
     sectionHoverHighlight,

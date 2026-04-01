@@ -643,10 +643,47 @@ function dedupeImplicitSameTitleProximity(
   return out;
 }
 
+/**
+ * Collapses ATX vs implicit / gap / hint pairs that share the same title a few lines apart
+ * (Plate hints + markdown line scan can otherwise emit two markers for one visible heading).
+ */
+function dedupeNearbySameTitleMarkers(doc: string, markers: HeadingMarker[], maxLineGap: number): HeadingMarker[] {
+  const sorted = [...markers].sort((a, b) => a.from - b.from);
+  const out: HeadingMarker[] = [];
+  const norm = (s: string) => s.replace(OUTLINE_BLANK_STRIP, "").trim().toLowerCase();
+  /** ATX `#` headings only — not manual breaks or implicit gap titles (those may duplicate a real heading). */
+  const isAtxOnly = (x: HeadingMarker) => !x.implicit && !x.manual;
+
+  for (const m of sorted) {
+    const mLine = lineIndexAtDocOffset(doc, m.from);
+    const mKey = norm(m.title);
+    let handled = false;
+    for (let i = out.length - 1; i >= 0; i--) {
+      const o = out[i]!;
+      if (norm(o.title) !== mKey) continue;
+      const oLine = lineIndexAtDocOffset(doc, o.from);
+      if (Math.abs(oLine - mLine) > maxLineGap) continue;
+      if (isAtxOnly(m) && isAtxOnly(o)) {
+        break;
+      }
+      const pm = outlineMarkerPriority(m, doc);
+      const po = outlineMarkerPriority(o, doc);
+      if (pm > po || (pm === po && m.from < o.from)) {
+        out[i] = m;
+      }
+      handled = true;
+      break;
+    }
+    if (!handled) out.push(m);
+  }
+  return out;
+}
+
 function postProcessOutlineMarkers(doc: string, markers: HeadingMarker[]): HeadingMarker[] {
   const sameTitle = dedupeMarkersSameLineSameTitle(doc, markers);
   const perLine = dedupeMaxPriorityMarkerPerLine(doc, sameTitle);
-  return dedupeImplicitSameTitleProximity(doc, perLine, 8, 2000);
+  const prox = dedupeImplicitSameTitleProximity(doc, perLine, 8, 2000);
+  return dedupeNearbySameTitleMarkers(doc, prox, 8);
 }
 
 function markersToDocSections(deduped: HeadingMarker[], doc: string): DocSection[] {
