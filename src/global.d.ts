@@ -1,6 +1,6 @@
 import "react";
 
-export type TemplateListItem = { path: string; name: string; source: 'bundled' | 'user' | 'custom' };
+export type TemplateListItem = { path: string; name: string; source: 'user' | 'custom' };
 
 declare module "react" {
   interface CSSProperties {
@@ -18,6 +18,7 @@ declare global {
       userTemplatesDir: () => Promise<string>;
       dialogOpen: () => Promise<string | null>;
       dialogSave: (defaultPath?: string) => Promise<string | null>;
+      dialogSavePdf: (defaultPath?: string) => Promise<string | null>;
       dialogOpenDirectory: () => Promise<string | null>;
       readFile: (
         filePath: string
@@ -25,6 +26,10 @@ declare global {
       writeFile: (
         filePath: string,
         content: string
+      ) => Promise<{ ok: true } | { ok: false; error: string }>;
+      writeFileBinary: (
+        filePath: string,
+        base64: string
       ) => Promise<{ ok: true } | { ok: false; error: string }>;
       pushRecent: (filePath: string) => Promise<string[]>;
       listTemplates: () => Promise<TemplateListItem[]>;
@@ -41,6 +46,7 @@ declare global {
       windowToggleMaximize: () => void;
       windowClose: () => void;
       subscribeWindowMaximized: (callback: (maximized: boolean) => void) => () => void;
+      subscribeSaveBeforeClose: (run: () => Promise<boolean>) => () => void;
     };
   }
 }

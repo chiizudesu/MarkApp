@@ -1,15 +1,26 @@
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import { Box, Flex, Dialog, Portal, Button, VStack, Field, Input, Text } from "@chakra-ui/react";
 import { useColorMode } from "@/components/ui/color-mode";
 import { PlateEditor, type PlateEditorHandle } from "@/components/Editor/PlateEditor";
 import { EditorToolbar } from "@/components/Editor/EditorToolbar";
 import { TitleBar } from "@/components/Layout/TitleBar";
+import { AiPdfExportDialog } from "@/components/Layout/AiPdfExportDialog";
 import { StatusBar } from "@/components/Layout/StatusBar";
 import { WelcomeScreen } from "@/components/Layout/WelcomeScreen";
 import { CommandPalette, type CommandItem } from "@/components/Layout/CommandPalette";
 import { DocumentOutline } from "@/components/Layout/DocumentOutline";
 import { toaster } from "@/components/ui/toaster";
 import { modShortcut, modShiftShortcut } from "@/utils/platform";
+import { exportCurrentDocToAiPdf } from "@/services/exportAiPdf";
 import {
   FilePlus,
   FolderOpen,
@@ -40,23 +51,33 @@ import {
   getSectionsFromText,
   buildOutline,
   findRelevantSections,
+  findDocSectionForOutlineMarkdownFrom,
   hasManualSectionMarkersInMarkdown,
   normOutlineTitleKey,
   type DocSection,
   type OutlineNode,
 } from "@/services/sectionService";
+import { buildTieredAgentUserPayload } from "@/services/agentContext";
+import { findReplacedMarkdownSpan, hashMarkdownSlice } from "@/utils/appliedMarkdownRange";
 import {
   streamAgentTurn,
   streamSectionReplace,
-  buildAgentUserPayload,
   autoSectionDocument,
   summarizeSectionChanges,
 } from "@/services/claude";
 import type { MessageParam } from "@anthropic-ai/sdk/resources";
+import { ReactEditor } from "slate-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatMessage, SectionRef } from "@/types/agent";
 import { normalizeAssistantMarkdownParagraphs, stripOuterMarkdownCodeFence } from "@/utils/markdownFence";
+import { sanitizeAssistantMarkdownOutput } from "@/utils/agentMarkdownSanitize";
+import {
+  classifyClipboardRichness,
+  htmlToPlainText,
+  readClipboardSnapshotAsync,
+} from "@/services/clipboardPaste";
+import { htmlToGfmMarkdown } from "@/utils/htmlToGfmMarkdown";
 import {
   MARKAPP_DEFAULT_STARTER_DOC,
   isEffectivelyBlankDocument,
@@ -64,6 +85,28 @@ import {
   lastAssistantDraft,
   looksLikeAssistantDocumentDraft,
 } from "@/utils/editorDocContext";
+
+async function loadAgentSystemSuffix(): Promise<string | undefined> {
+  const api = window.markAPI;
+  if (!api) return undefined;
+  const custom = String((await api.getStore("agentCustomInstructions")) ?? "").trim();
+  const memOn = Boolean(await api.getStore("agentBehavioralMemoryEnabled"));
+  const memory = memOn ? String((await api.getStore("agentBehavioralMemory")) ?? "").trim() : "";
+  const parts: string[] = [];
+  if (custom.length > 0) parts.push(custom);
+  if (memory.length > 0) parts.push(`Behavioral memory (user-provided):\n${memory}`);
+  const joined = parts.join("\n\n").trim();
+  return joined.length > 0 ? joined : undefined;
+}
+
+/** True when live markdown slice matches stored section text (handles Plate normalize vs outline slice). */
+function markdownSlicesMatchForReplace(docSlice: string, oldText: string): boolean {
+  if (docSlice === oldText) return true;
+  if (docSlice.trim() === oldText.trim()) return true;
+  const a = normalizeAssistantMarkdownParagraphs(docSlice);
+  const b = normalizeAssistantMarkdownParagraphs(oldText);
+  return a === b;
+}
 
 /** Replace one occurrence of needle; when hintIndex is set, pick the match closest to that index. */
 function replaceSubstringAtHint(
@@ -102,7 +145,11 @@ function resolveProposalMarkdownRange(
   if (title === "(Selection)") {
     const needles = [
       ...new Set(
-        [normalizeAssistantMarkdownParagraphs(p.newText), p.newText].filter((s) => s.length > 0),
+        [
+          sanitizeAssistantMarkdownOutput(p.newText),
+          normalizeAssistantMarkdownParagraphs(p.newText),
+          p.newText,
+        ].filter((s) => s.length > 0),
       ),
     ];
     let bestIdx = -1;
@@ -216,6 +263,10 @@ function chatSidecarPath(filePath: string | null) {
   return `${filePath}.markapp.chat.json`;
 }
 
+function eventTargetInAppDialog(target: EventTarget | null): boolean {
+  return target instanceof Element && Boolean(target.closest('[role="dialog"]'));
+}
+
 export function App() {
   const { colorMode } = useColorMode();
   const isDark = colorMode === "dark";
@@ -244,12 +295,34 @@ export function App() {
   /** Timestamp of last explicit outline-pick; syncCursor is suppressed for 800ms after a pick. */
   const lastOutlinePickRef = useRef<number>(0);
 
+  const paletteActionsRef = useRef<{
+    save: () => Promise<void>;
+    saveAs: () => Promise<void>;
+    openDoc: () => Promise<void>;
+    newDoc: () => void;
+    copyWholeDoc: () => Promise<void>;
+    runAutoSection: () => void;
+    setAgentOpen: Dispatch<SetStateAction<boolean>>;
+    setPaletteOpen: Dispatch<SetStateAction<boolean>>;
+    setQuickAIOpen: Dispatch<SetStateAction<boolean>>;
+    setQuickSectionTitle: Dispatch<SetStateAction<string>>;
+  }>(null!);
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streamingText, setStreamingText] = useState("");
   const [agentBusy, setAgentBusy] = useState(false);
   const [contextSections, setContextSections] = useState<SectionRef[]>([]);
   const [mentionDocument, setMentionDocument] = useState(false);
   const [mentionClipboard, setMentionClipboard] = useState(false);
+  /**
+   * Green gutter after the latest successful AI apply. `contentHash` is {@link hashMarkdownSlice} of
+   * `doc.slice(from, to)` at apply time — manual edits inside that span clear the gutter when the hash diverges.
+   */
+  const [lastAssistantChangeRange, setLastAssistantChangeRange] = useState<{
+    from: number;
+    to: number;
+    contentHash: string;
+  } | null>(null);
 
   const [recentFiles, setRecentFiles] = useState<string[]>([]);
   const [showWelcome, setShowWelcome] = useState(true);
@@ -257,8 +330,30 @@ export function App() {
   const [resizerHover, setResizerHover] = useState(false);
   const [outlineWidth, setOutlineWidth] = useState(240);
   const [outlineResizerHover, setOutlineResizerHover] = useState(false);
+  const [aiPdfExportBusy, setAiPdfExportBusy] = useState(false);
+  const [aiPdfDlgOpen, setAiPdfDlgOpen] = useState(false);
+  const [aiPdfProgress, setAiPdfProgress] = useState(0);
+  const [aiPdfStatus, setAiPdfStatus] = useState("");
+  const [aiPdfError, setAiPdfError] = useState<string | null>(null);
 
   const chatHistoryRef = useRef<MessageParam[]>([]);
+
+  useEffect(() => {
+    if (!lastAssistantChangeRange) return;
+    const { from, to, contentHash } = lastAssistantChangeRange;
+    if (!contentHash || to <= from) {
+      setLastAssistantChangeRange(null);
+      return;
+    }
+    const end = Math.min(to, doc.length);
+    if (end <= from) {
+      setLastAssistantChangeRange(null);
+      return;
+    }
+    if (hashMarkdownSlice(doc, { from, to: end }) !== contentHash) {
+      setLastAssistantChangeRange(null);
+    }
+  }, [doc, lastAssistantChangeRange]);
 
   useEffect(() => {
     setOutlineFromEditor(null);
@@ -274,9 +369,35 @@ export function App() {
   }, [refreshRecents]);
 
   const [outlineFromEditor, setOutlineFromEditor] = useState<DocSection[] | null>(null);
+
+  useEffect(() => {
+    if (!sectionHoverHighlight) {
+      setOutlineFromEditor(null);
+      return;
+    }
+    if (showWelcome || previewMode) return;
+    queueMicrotask(() => {
+      editorRef.current?.syncOutlineSections();
+    });
+  }, [sectionHoverHighlight, showWelcome, previewMode]);
+
   const sections = outlineFromEditor ?? getSectionsFromText(doc);
   const outline = useMemo(() => buildOutline(sections.filter((s) => s.level > 0)), [sections]);
   const allSectionRefs = useMemo(() => sections.filter((s) => s.level > 0).map(sectionToRef), [sections]);
+  const outlineActiveSectionId = useMemo(
+    () =>
+      activeSectionFrom != null
+        ? (findDocSectionForOutlineMarkdownFrom(sections, activeSectionFrom)?.id ?? null)
+        : null,
+    [sections, activeSectionFrom],
+  );
+
+  const onOutlinePick = useCallback((node: OutlineNode) => {
+    lastOutlinePickRef.current = Date.now();
+    editorRef.current?.flushMarkdownToParent();
+    setActiveSectionFrom(node.from);
+    editorRef.current?.focusSectionAtMarkdownFrom(node.from);
+  }, []);
 
   /** Editor content after flushing any debounced sync (use before save, agent, copy). */
   const getLiveMarkdown = useCallback((): string => {
@@ -284,6 +405,67 @@ export function App() {
     editorRef.current.flushMarkdownToParent();
     return editorRef.current.getMarkdown();
   }, [previewMode, showWelcome, doc]);
+
+  const exportAiPdfFromTitleBar = useCallback(() => {
+    if (!window.markAPI) return;
+    if (showWelcome || previewMode || !editorRef.current) {
+      toaster.create({
+        type: "warning",
+        title: "No document",
+        description: "Open the editor and add content before exporting to PDF.",
+      });
+      return;
+    }
+    editorRef.current.flushMarkdownToParent();
+    const md = editorRef.current.getMarkdown();
+    if (!md.trim()) {
+      toaster.create({
+        type: "warning",
+        title: "Empty document",
+        description: "Add some content before exporting to PDF.",
+      });
+      return;
+    }
+    const defaultPdf =
+      filePath && /\.(md|markdown|txt)$/i.test(filePath)
+        ? filePath.replace(/\.(md|markdown|txt)$/i, ".pdf")
+        : filePath
+          ? `${filePath}.pdf`
+          : undefined;
+    setAiPdfError(null);
+    setAiPdfProgress(0);
+    setAiPdfStatus("Preparing document…");
+    setAiPdfDlgOpen(true);
+    setAiPdfExportBusy(true);
+    void (async () => {
+      try {
+        const written = await exportCurrentDocToAiPdf(md, defaultPdf ?? undefined, (p) => {
+          setAiPdfProgress(p.progress);
+          setAiPdfStatus(p.status);
+        });
+        if (written) {
+          toaster.create({
+            type: "success",
+            title: "PDF saved",
+            description: "AI layout export finished.",
+          });
+          setAiPdfDlgOpen(false);
+          setAiPdfStatus("");
+          setAiPdfProgress(0);
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setAiPdfError(msg);
+        toaster.create({
+          type: "error",
+          title: "PDF export failed",
+          description: msg,
+        });
+      } finally {
+        setAiPdfExportBusy(false);
+      }
+    })();
+  }, [showWelcome, previewMode, filePath]);
 
   /** Inline AI diff UI on the sheet (highlight + Keep / Undo), same proposal as the agent chat. */
   const editorProposalInline = useMemo(() => {
@@ -354,6 +536,8 @@ export function App() {
   const syncCursor = useCallback(() => {
     // Don't let the polling interval override an explicit outline click for a short window.
     if (Date.now() - lastOutlinePickRef.current < 800) return;
+    const ed = editorRef.current?.getEditor();
+    if (!ed || !ReactEditor.isFocused(ed as any)) return;
     const cur = editorRef.current?.getCursorMarkdownSection();
     // Only update when the caret is in a known section — don't clear the selected highlight
     // when focus moves away or the caret lands in the preamble.
@@ -428,7 +612,14 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    void saveChat();
+    void saveChat().catch((e) => {
+      console.error(e);
+      toaster.create({
+        type: "error",
+        title: "Could not save chat",
+        description: e instanceof Error ? e.message : String(e),
+      });
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- persist when chat state changes
   }, [messages, contextSections, mentionDocument, mentionClipboard, filePath]);
 
@@ -473,6 +664,7 @@ export function App() {
     setContextSections([]);
     setMentionDocument(false);
     setMentionClipboard(false);
+    setLastAssistantChangeRange(null);
     void loadChat(null);
   };
 
@@ -487,7 +679,11 @@ export function App() {
           setAgentBusy(true);
           text = await autoSectionDocument(text);
         } catch {
-          /* keep original if API/key missing or request fails */
+          toaster.create({
+            type: "info",
+            title: "Opened without AI structure",
+            description: "Could not auto-add sections — open Settings to set your API key, or edit headings manually.",
+          });
         } finally {
           setAgentBusy(false);
         }
@@ -500,6 +696,7 @@ export function App() {
       await refreshRecents();
       void loadChat(p);
       setShowWelcome(false);
+      setLastAssistantChangeRange(null);
       toaster.create({
         type: "success",
         title: "Opened",
@@ -573,6 +770,42 @@ export function App() {
     }
   };
 
+  const saveBeforeWindowClose = useCallback(async (): Promise<boolean> => {
+    try {
+      if (filePath) {
+        const md = getLiveMarkdown();
+        await writeTextFile(filePath, md);
+        setDirty(false);
+        return true;
+      }
+      const p = await saveFileDialog();
+      if (!p) return false;
+      await writeTextFile(p, getLiveMarkdown());
+      setFilePath(p);
+      setDirty(false);
+      await pushRecent(p);
+      await refreshRecents();
+      void loadChat(p);
+      return true;
+    } catch (e) {
+      toaster.create({
+        type: "error",
+        title: "Save failed",
+        description: e instanceof Error ? e.message : String(e),
+      });
+      return false;
+    }
+  }, [filePath, getLiveMarkdown, loadChat, refreshRecents]);
+
+  const saveBeforeCloseRef = useRef(saveBeforeWindowClose);
+  saveBeforeCloseRef.current = saveBeforeWindowClose;
+
+  useEffect(() => {
+    const api = window.markAPI;
+    if (!api?.subscribeSaveBeforeClose) return;
+    return api.subscribeSaveBeforeClose(async () => saveBeforeCloseRef.current());
+  }, []);
+
   const clearChat = () => {
     setMessages([]);
     chatHistoryRef.current = [];
@@ -588,18 +821,39 @@ export function App() {
     (
       oldText: string,
       newText: string,
-      opts?: { normalizeReplacement?: boolean; replaceHintIndex?: number },
-    ) => {
+      opts?: {
+        normalizeReplacement?: boolean;
+        replaceHintIndex?: number;
+        /** When set (e.g. pinned section), replace this half-open span if it matches `oldText` — avoids wrong first-match when the same text appears earlier in the doc. */
+        replaceRange?: { from: number; to: number };
+      },
+    ): boolean => {
       const normalizeReplacement = opts?.normalizeReplacement !== false;
-      const replacement = normalizeReplacement ? normalizeAssistantMarkdownParagraphs(newText) : newText;
+      const replacement = normalizeReplacement ? sanitizeAssistantMarkdownOutput(newText) : newText;
       const handle = editorRef.current;
-      if (!handle) return;
+      if (!handle) return false;
       const current = handle.getMarkdown();
       let nextMd: string;
       if (isEffectivelyBlankDocument(current) || oldText === "") {
         // Blank or placeholder document — insert the whole response directly
         nextMd = replacement;
       } else {
+        const rr = opts?.replaceRange;
+        if (rr !== undefined && rr.from >= 0 && rr.to > rr.from) {
+          const to = Math.min(rr.to, current.length);
+          const from = Math.min(rr.from, to);
+          if (from < to) {
+            const slice = current.slice(from, to);
+            if (markdownSlicesMatchForReplace(slice, oldText)) {
+              nextMd = current.slice(0, from) + replacement + current.slice(to);
+              handle.setMarkdown(nextMd);
+              setDoc(handle.getMarkdown());
+              setDirty(true);
+              return true;
+            }
+          }
+        }
+
         const hint = opts?.replaceHintIndex;
         const hinted =
           hint !== undefined && hint >= 0 ? replaceSubstringAtHint(current, oldText, replacement, hint) : null;
@@ -618,24 +872,39 @@ export function App() {
         } else {
           // Section text not found in the current document (stale snapshot, user edited
           // while streaming, etc.) — do nothing rather than silently overwrite.
-          return;
+          return false;
         }
       }
       handle.setMarkdown(nextMd);
       setDoc(handle.getMarkdown());
       setDirty(true);
+      return true;
     },
     [],
   );
 
   const acceptProposal = useCallback((msgId: string) => {
-    setMessages((prev) =>
-      prev.map((m) =>
+    setMessages((prev) => {
+      const cur = prev.find((m) => m.id === msgId);
+      const af = cur?.sectionProposal?.appliedMarkdownFrom;
+      const at = cur?.sectionProposal?.appliedMarkdownTo;
+      const storedHash = cur?.sectionProposal?.appliedContentHash;
+      if (af != null && at != null && at >= af) {
+        queueMicrotask(() => {
+          editorRef.current?.flushMarkdownToParent();
+          const live = editorRef.current?.getMarkdown() ?? "";
+          const end = Math.min(at, live.length);
+          const contentHash =
+            storedHash && end > af ? storedHash : hashMarkdownSlice(live, { from: af, to: end });
+          setLastAssistantChangeRange({ from: af, to: at, contentHash });
+        });
+      }
+      return prev.map((m) =>
         m.id === msgId && m.sectionProposal
           ? { ...m, sectionProposal: { ...m.sectionProposal, accepted: true } }
           : m,
-      ),
-    );
+      );
+    });
   }, []);
 
   const revertProposal = useCallback((msgId: string) => {
@@ -645,17 +914,36 @@ export function App() {
     const msg = messages.find((m) => m.id === msgId);
     if (!msg?.sectionProposal) return;
     const { oldText, newText } = msg.sectionProposal;
+    const p = msg.sectionProposal;
     const live = handle.getMarkdown();
     const normalizedNew = normalizeAssistantMarkdownParagraphs(newText);
     const needles = [...new Set([normalizedNew, newText].filter((s) => s.length > 0))];
     const hint = msg.sectionProposal.sectionMarkdownFrom;
 
     let nextMd: string | null = null;
-    for (const needle of needles) {
-      const replaced = replaceSubstringAtHint(live, needle, oldText, hint);
-      if (replaced !== null && replaced !== live) {
-        nextMd = replaced;
-        break;
+
+    if (
+      p.appliedMarkdownFrom !== undefined &&
+      p.appliedMarkdownTo !== undefined &&
+      p.appliedMarkdownFrom >= 0 &&
+      p.appliedMarkdownTo >= p.appliedMarkdownFrom
+    ) {
+      const end = Math.min(p.appliedMarkdownTo, live.length);
+      if (end >= p.appliedMarkdownFrom) {
+        const sliceHash = hashMarkdownSlice(live, { from: p.appliedMarkdownFrom, to: end });
+        if (!p.appliedContentHash || sliceHash === p.appliedContentHash) {
+          nextMd = live.slice(0, p.appliedMarkdownFrom) + oldText + live.slice(end);
+        }
+      }
+    }
+
+    if (nextMd == null) {
+      for (const needle of needles) {
+        const replaced = replaceSubstringAtHint(live, needle, oldText, hint);
+        if (replaced !== null && replaced !== live) {
+          nextMd = replaced;
+          break;
+        }
       }
     }
 
@@ -710,6 +998,7 @@ export function App() {
     handle.setMarkdown(nextMd);
     setDoc(handle.getMarkdown());
     setDirty(true);
+    setLastAssistantChangeRange(null);
     setMessages((prev) =>
       prev.map((m) =>
         m.id === msgId && m.sectionProposal
@@ -719,18 +1008,30 @@ export function App() {
     );
   }, [messages]);
 
-  const addSectionToChat = (node: OutlineNode) => {
+  const addSectionToChat = useCallback((node: OutlineNode) => {
     const sec = sections.find((s) => s.id === node.id || s.from === node.from);
     if (!sec) return;
     const ref = sectionToRef(sec);
     setContextSections((prev) => (prev.some((p) => p.id === ref.id) ? prev : [...prev, ref]));
-  };
+  }, [sections]);
 
-  const addSectionRefToAgent = (ref: SectionRef) => {
+  const addSectionRefToAgent = useCallback((ref: SectionRef) => {
     setContextSections((prev) => (prev.some((p) => p.id === ref.id) ? prev : [...prev, ref]));
-  };
+  }, []);
 
   const sendAgentMessage = async (text: string) => {
+    const pendingProposal = messages.some(
+      (m) => m.sectionProposal && m.sectionProposal.accepted === undefined,
+    );
+    if (pendingProposal) {
+      toaster.create({
+        type: "warning",
+        title: "Pending AI edit",
+        description: "Keep or revert the highlighted change before sending another message.",
+      });
+      return;
+    }
+
     if (!previewMode && !showWelcome && editorRef.current) {
       editorRef.current.flushMarkdownToParent();
     }
@@ -753,20 +1054,22 @@ export function App() {
         ? getSectionsFromText(liveDoc)
         : (outlineFromEditor ?? getSectionsFromText(liveDoc));
 
-    // Auto-accept any undecided proposal before starting a new turn so history stays linear
-    // and revert of an older proposal can't corrupt a newer edit.
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.sectionProposal && m.sectionProposal.accepted === undefined
-          ? { ...m, sectionProposal: { ...m.sectionProposal, accepted: true } }
-          : m,
-      ),
-    );
-
     let clip: string | null = null;
     if (mentionClipboard) {
       try {
-        clip = await navigator.clipboard.readText();
+        const snap = await readClipboardSnapshotAsync();
+        const kind = classifyClipboardRichness(snap);
+        if (kind === "oversized" || kind === "plain" || !snap.html?.trim()) {
+          clip = snap.plain.trim() ? snap.plain : htmlToPlainText(snap.html ?? "");
+        } else {
+          const conv = htmlToGfmMarkdown(snap.html ?? "", snap.plain);
+          clip = conv.ok
+            ? conv.markdown
+            : snap.plain.trim()
+              ? snap.plain
+              : htmlToPlainText(snap.html ?? "");
+        }
+        if (!clip?.trim()) clip = "(clipboard empty)";
       } catch {
         clip = "(clipboard unavailable)";
       }
@@ -800,13 +1103,17 @@ export function App() {
           to: s.to,
         }));
 
-    const userContent = buildAgentUserPayload({
+    const blankish = isEffectivelyBlankDocument(liveDoc);
+    const directEditorOutput = contextualPins.length === 1 || blankish;
+
+    const userContent = buildTieredAgentUserPayload({
       instruction: text,
       fullDocument: liveDoc,
       sections: effectiveSections,
       documentSections: sectionsForOutline,
       mentionDocument,
       mentionClipboard: mentionClipboard ? clip : null,
+      directEditorOutput,
     });
 
     const priorDraft = lastAssistantDraft(messages);
@@ -814,7 +1121,14 @@ export function App() {
       const userMsg: ChatMessage = { id: `u-${Date.now()}`, role: "user", content: text };
       setMessages((m) => [...m, userMsg]);
       chatHistoryRef.current.push({ role: "user", content: userContent });
-      applySectionReplacementToEditor("", priorDraft);
+      const appliedPrior = applySectionReplacementToEditor("", priorDraft);
+      if (!appliedPrior) {
+        toaster.create({
+          type: "info",
+          title: "Could not apply previous reply",
+          description: "The editor was not ready. Try again from the editor.",
+        });
+      }
       const ack =
         "Done — I added my previous reply to your document. You can still edit or undo in the editor.";
       const asst: ChatMessage = {
@@ -834,6 +1148,11 @@ export function App() {
     setAgentBusy(true);
     setStreamingText("");
     try {
+      const systemSuffix = await loadAgentSystemSuffix();
+      const disallowCodeBlocks = Boolean(await window.markAPI?.getStore("agentDisallowCodeBlocks"));
+      const streamOpts: { systemSuffix?: string; disallowCodeBlocks?: boolean } = {};
+      if (systemSuffix) streamOpts.systemSuffix = systemSuffix;
+      if (disallowCodeBlocks) streamOpts.disallowCodeBlocks = true;
       let full = "";
       await streamAgentTurn(
         [...chatHistoryRef.current],
@@ -841,10 +1160,10 @@ export function App() {
           full += chunk;
           setStreamingText(full);
         },
+        Object.keys(streamOpts).length > 0 ? streamOpts : undefined,
       );
 
-      const cleaned = normalizeAssistantMarkdownParagraphs(stripOuterMarkdownCodeFence(full));
-      const blankish = isEffectivelyBlankDocument(liveDoc);
+      const cleaned = sanitizeAssistantMarkdownOutput(stripOuterMarkdownCodeFence(full));
       const baselineMarkdown = liveDoc;
       const wholeDocUnpinned =
         contextualPins.length === 0 &&
@@ -859,8 +1178,7 @@ export function App() {
               newText: cleaned,
               sectionTitle:
                 blankish ? "Document" : contextualPins.length === 1 ? contextualPins[0].title : "Document",
-              // Store the heading's markdown offset so the editor overlay can find the true
-              // post-edit span even when the AI adds sub-headings that split the section.
+              targetSectionId: contextualPins.length === 1 ? contextualPins[0].id : undefined,
               sectionMarkdownFrom:
                 contextualPins.length === 1 ? contextualPins[0].from : undefined,
               sectionMarkdownTo:
@@ -868,8 +1186,9 @@ export function App() {
             }
           : undefined;
 
+      const asstId = `a-${Date.now()}`;
       const asst: ChatMessage = {
-        id: `a-${Date.now()}`,
+        id: asstId,
         role: "assistant",
         content: cleaned,
         sectionProposal,
@@ -879,10 +1198,56 @@ export function App() {
       setStreamingText("");
 
       if (sectionProposal) {
-        applySectionReplacementToEditor(sectionProposal.oldText, sectionProposal.newText, {
+        const beforeApply =
+          !previewMode && !showWelcome && editorRef.current
+            ? editorRef.current.getMarkdown()
+            : liveDoc;
+        const applied = applySectionReplacementToEditor(sectionProposal.oldText, sectionProposal.newText, {
           replaceHintIndex: sectionProposal.sectionMarkdownFrom,
+          replaceRange:
+            sectionProposal.sectionMarkdownFrom != null &&
+            sectionProposal.sectionMarkdownTo != null &&
+            sectionProposal.sectionMarkdownTo > sectionProposal.sectionMarkdownFrom
+              ? { from: sectionProposal.sectionMarkdownFrom, to: sectionProposal.sectionMarkdownTo }
+              : undefined,
         });
-        // Fire-and-forget: fetch AI bullet summary and patch the message once ready
+        if (!applied) {
+          toaster.create({
+            type: "info",
+            title: "Could not apply edit",
+            description: "The document may have changed so the section no longer matches.",
+          });
+        } else if (!previewMode && !showWelcome && editorRef.current) {
+          editorRef.current.flushMarkdownToParent();
+          const after = editorRef.current.getMarkdown();
+          const span = findReplacedMarkdownSpan(beforeApply, after);
+          const appliedPatch =
+            span != null
+              ? {
+                  appliedMarkdownFrom: span.from,
+                  appliedMarkdownTo: span.to,
+                  appliedContentHash: hashMarkdownSlice(after, span),
+                }
+              : {};
+          if (Object.keys(appliedPatch).length > 0) {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === asstId && msg.sectionProposal
+                  ? { ...msg, sectionProposal: { ...msg.sectionProposal, ...appliedPatch } }
+                  : msg,
+              ),
+            );
+          }
+          if (span) {
+            setLastAssistantChangeRange({
+              ...span,
+              contentHash: hashMarkdownSlice(after, span),
+            });
+            queueMicrotask(() => {
+              editorRef.current?.scrollMarkdownRangeIntoView(span.from, span.to);
+            });
+          }
+        }
         summarizeSectionChanges(
           sectionProposal.oldText,
           sectionProposal.newText,
@@ -891,7 +1256,7 @@ export function App() {
           if (!summary.length) return;
           setMessages((prev) =>
             prev.map((msg) =>
-              msg.id === asst.id && msg.sectionProposal
+              msg.id === asstId && msg.sectionProposal
                 ? { ...msg, sectionProposal: { ...msg.sectionProposal, summary } }
                 : msg,
             ),
@@ -934,8 +1299,32 @@ export function App() {
       await streamSectionReplace(sec.content, instruction, (c) => {
         out += c;
       });
-      const cleaned = normalizeAssistantMarkdownParagraphs(stripOuterMarkdownCodeFence(out.trim()));
-      applySectionReplacementToEditor(sec.content, cleaned);
+      const cleaned = sanitizeAssistantMarkdownOutput(stripOuterMarkdownCodeFence(out.trim()));
+      const beforeApply = liveDoc;
+      const appliedQuick = applySectionReplacementToEditor(sec.content, cleaned, {
+        replaceHintIndex: sec.from,
+        replaceRange: { from: sec.from, to: sec.to },
+      });
+      if (!appliedQuick) {
+        toaster.create({
+          type: "info",
+          title: "Could not apply edit",
+          description: "The document may have changed so this section no longer matches.",
+        });
+      } else if (editorRef.current) {
+        editorRef.current.flushMarkdownToParent();
+        const after = editorRef.current.getMarkdown();
+        const span = findReplacedMarkdownSpan(beforeApply, after);
+        if (span) {
+          setLastAssistantChangeRange({
+            ...span,
+            contentHash: hashMarkdownSlice(after, span),
+          });
+          queueMicrotask(() => {
+            editorRef.current?.scrollMarkdownRangeIntoView(span.from, span.to);
+          });
+        }
+      }
     } catch (e) {
       toaster.create({
         type: "error",
@@ -948,9 +1337,59 @@ export function App() {
   };
 
   const copyWholeDoc = async () => {
-    await navigator.clipboard.writeText(getLiveMarkdown());
-    toaster.create({ type: "success", title: "Copied", description: "Entire document copied to clipboard." });
+    try {
+      await navigator.clipboard.writeText(getLiveMarkdown());
+      toaster.create({ type: "success", title: "Copied", description: "Entire document copied to clipboard." });
+    } catch (e) {
+      toaster.create({
+        type: "error",
+        title: "Copy failed",
+        description: e instanceof Error ? e.message : String(e),
+      });
+    }
   };
+
+  const runAutoSectionCommand = useCallback(() => {
+    void (async () => {
+      const md = getLiveMarkdown();
+      const secs = getSectionsFromText(md);
+      const onlyRoot = secs.length === 1 && secs[0]?.level === 0;
+      const hasManualBreaks = hasManualSectionMarkersInMarkdown(md);
+      if (hasManualBreaks) {
+        toaster.create({
+          type: "info",
+          title: "Manual section breaks present",
+          description:
+            "AI auto-section is disabled while <!--markapp-manual-section--> lines exist so they are not removed.",
+        });
+        return;
+      }
+      if (!onlyRoot) {
+        toaster.create({
+          type: "info",
+          title: "Already structured",
+          description: "Document already has section headings.",
+        });
+        return;
+      }
+      setAgentBusy(true);
+      try {
+        const next = await autoSectionDocument(md);
+        editorRef.current?.setMarkdown(next);
+        setDoc(next);
+        setDirty(true);
+        toaster.create({ type: "success", title: "Sections added" });
+      } catch (e) {
+        toaster.create({
+          type: "error",
+          title: "Auto-section failed",
+          description: (e as Error).message,
+        });
+      } finally {
+        setAgentBusy(false);
+      }
+    })();
+  }, [getLiveMarkdown]);
 
   const saveAsTemplate = async (name: string) => {
     const api = window.markAPI;
@@ -967,47 +1406,68 @@ export function App() {
     }
   };
 
+  paletteActionsRef.current = {
+    save,
+    saveAs,
+    openDoc,
+    newDoc,
+    copyWholeDoc,
+    runAutoSection: runAutoSectionCommand,
+    setAgentOpen,
+    setPaletteOpen,
+    setQuickAIOpen,
+    setQuickSectionTitle,
+  };
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
+      const inDialog = eventTargetInAppDialog(e.target);
+      const allowFileAndCopy = !inDialog;
+
       if (mod && e.key.toLowerCase() === "s" && !e.shiftKey) {
+        if (!allowFileAndCopy) return;
         e.preventDefault();
-        void save();
+        void paletteActionsRef.current.save();
       }
       if (mod && e.key.toLowerCase() === "o" && !e.shiftKey) {
+        if (!allowFileAndCopy) return;
         e.preventDefault();
-        void openDoc();
+        void paletteActionsRef.current.openDoc();
       }
       if (mod && e.key.toLowerCase() === "n" && !e.shiftKey) {
+        if (!allowFileAndCopy) return;
         e.preventDefault();
-        newDoc();
+        paletteActionsRef.current.newDoc();
       }
       if (mod && e.key.toLowerCase() === "s" && e.shiftKey) {
+        if (!allowFileAndCopy) return;
         e.preventDefault();
-        void saveAs();
+        void paletteActionsRef.current.saveAs();
       }
       if (mod && e.shiftKey && e.key.toLowerCase() === "c") {
+        if (!allowFileAndCopy) return;
         e.preventDefault();
-        void copyWholeDoc();
+        void paletteActionsRef.current.copyWholeDoc();
       }
       if (mod && e.key.toLowerCase() === "l") {
         e.preventDefault();
-        setAgentOpen((o) => !o);
+        paletteActionsRef.current.setAgentOpen((o) => !o);
       }
       if (mod && e.key.toLowerCase() === "k") {
         e.preventDefault();
         const cur = editorRef.current?.getCursorMarkdownSection();
-        setQuickSectionTitle(cur?.title ?? "(no section)");
-        setQuickAIOpen(true);
+        paletteActionsRef.current.setQuickSectionTitle(cur?.title ?? "(no section)");
+        paletteActionsRef.current.setQuickAIOpen(true);
       }
       if (mod && e.shiftKey && e.key.toLowerCase() === "p") {
         e.preventDefault();
-        setPaletteOpen(true);
+        paletteActionsRef.current.setPaletteOpen(true);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [doc, getLiveMarkdown]);
+  }, []);
 
   const commands: CommandItem[] = useMemo(
     () => [
@@ -1018,7 +1478,7 @@ export function App() {
         keywords: ["clear", "blank"],
         shortcut: modShortcut("N"),
         icon: <FilePlus size={14} />,
-        run: newDoc,
+        run: () => paletteActionsRef.current.newDoc(),
       },
       {
         id: "open",
@@ -1026,7 +1486,7 @@ export function App() {
         category: "File",
         shortcut: modShortcut("O"),
         icon: <FolderOpen size={14} />,
-        run: () => void openDoc(),
+        run: () => void paletteActionsRef.current.openDoc(),
       },
       {
         id: "save",
@@ -1034,7 +1494,7 @@ export function App() {
         category: "File",
         shortcut: modShortcut("S"),
         icon: <Save size={14} />,
-        run: () => void save(),
+        run: () => void paletteActionsRef.current.save(),
       },
       {
         id: "saveas",
@@ -1042,7 +1502,7 @@ export function App() {
         category: "File",
         shortcut: modShiftShortcut("S"),
         icon: <SaveAll size={14} />,
-        run: () => void saveAs(),
+        run: () => void paletteActionsRef.current.saveAs(),
       },
       {
         id: "template",
@@ -1075,7 +1535,7 @@ export function App() {
         category: "View",
         shortcut: modShortcut("L"),
         icon: <PanelRight size={14} />,
-        run: () => setAgentOpen((o) => !o),
+        run: () => paletteActionsRef.current.setAgentOpen((o) => !o),
       },
       {
         id: "preview",
@@ -1104,7 +1564,7 @@ export function App() {
         category: "View",
         keywords: ["commands", "palette", "search"],
         shortcut: modShiftShortcut("P"),
-        run: () => setPaletteOpen(true),
+        run: () => paletteActionsRef.current.setPaletteOpen(true),
       },
       {
         id: "quick-ai",
@@ -1113,8 +1573,8 @@ export function App() {
         shortcut: modShortcut("K"),
         run: () => {
           const cur = editorRef.current?.getCursorMarkdownSection();
-          setQuickSectionTitle(cur?.title ?? "(no section)");
-          setQuickAIOpen(true);
+          paletteActionsRef.current.setQuickSectionTitle(cur?.title ?? "(no section)");
+          paletteActionsRef.current.setQuickAIOpen(true);
         },
       },
       {
@@ -1123,49 +1583,10 @@ export function App() {
         category: "AI",
         keywords: ["ai", "headings", "structure", "outline"],
         icon: <ListTree size={14} />,
-        run: () =>
-          void (async () => {
-            const md = getLiveMarkdown();
-            const secs = getSectionsFromText(md);
-            const onlyRoot = secs.length === 1 && secs[0]?.level === 0;
-            const hasManualBreaks = hasManualSectionMarkersInMarkdown(md);
-            if (hasManualBreaks) {
-              toaster.create({
-                type: "info",
-                title: "Manual section breaks present",
-                description:
-                  "AI auto-section is disabled while <!--markapp-manual-section--> lines exist so they are not removed.",
-              });
-              return;
-            }
-            if (!onlyRoot) {
-              toaster.create({
-                type: "info",
-                title: "Already structured",
-                description: "Document already has section headings.",
-              });
-              return;
-            }
-            setAgentBusy(true);
-            try {
-              const next = await autoSectionDocument(md);
-              editorRef.current?.setMarkdown(next);
-              setDoc(next);
-              setDirty(true);
-              toaster.create({ type: "success", title: "Sections added" });
-            } catch (e) {
-              toaster.create({
-                type: "error",
-                title: "Auto-section failed",
-                description: (e as Error).message,
-              });
-            } finally {
-              setAgentBusy(false);
-            }
-          })(),
+        run: () => paletteActionsRef.current.runAutoSection(),
       },
     ],
-    [doc, getLiveMarkdown],
+    [],
   );
 
   const dragRef = useRef<{ startX: number; startW: number } | null>(null);
@@ -1189,7 +1610,13 @@ export function App() {
           onSave={() => void save()}
           onSaveAs={() => void saveAs()}
           onSettings={() => setSettingsOpen(true)}
+          onOpenTemplates={() => {
+            setShowWelcome(false);
+            setTemplatePickerOpen(true);
+          }}
           onTemplateManager={() => setTemplateMgrOpen(true)}
+          onExportAiPdf={window.markAPI ? exportAiPdfFromTitleBar : undefined}
+          aiPdfExportBusy={aiPdfExportBusy}
         />
       )}
       <Flex flex="1" direction="column" minH={0} overflow="hidden">
@@ -1203,7 +1630,7 @@ export function App() {
           />
         )}
         <Flex flex="1" minH={0} overflow="hidden">
-          {!zenMode && !showWelcome && (
+          {!zenMode && !showWelcome && sectionHoverHighlight && (
             <>
               <Flex
                 direction="column"
@@ -1216,12 +1643,8 @@ export function App() {
               >
                 <DocumentOutline
                   tree={outline}
-                  activeSectionId={sections.find((s) => s.from === activeSectionFrom)?.id ?? null}
-                  onPick={(node) => {
-                    lastOutlinePickRef.current = Date.now();
-                    setActiveSectionFrom(node.from);
-                    editorRef.current?.focusSectionAtMarkdownFrom(node.from);
-                  }}
+                  activeSectionId={outlineActiveSectionId}
+                  onPick={onOutlinePick}
                   onAddToChat={addSectionToChat}
                 />
               </Flex>
@@ -1318,14 +1741,21 @@ export function App() {
                     syncCursor();
                     queueMicrotask(() => editorRef.current?.syncOutlineSections());
                   }}
-                  sections={sections}
                   onAddSectionToAgent={addSectionRefToAgent}
                   onAddSelectionToAgent={addSectionRefToAgent}
                   sectionHoverHighlight={sectionHoverHighlight}
-                  activeSectionMarkdownFrom={editorProposalInline ? null : activeSectionFrom}
+                  activeSectionMarkdownFrom={activeSectionFrom}
                   onOutlineSectionsChange={setOutlineFromEditor}
                   outlineBootGeneration={editorKey}
                   proposalInline={editorProposalInline ?? undefined}
+                  lastAssistantMarkdownRange={
+                    lastAssistantChangeRange
+                      ? {
+                          from: lastAssistantChangeRange.from,
+                          to: lastAssistantChangeRange.to,
+                        }
+                      : null
+                  }
                   onProposalAccept={acceptProposal}
                   onProposalRevert={revertProposal}
                 />
@@ -1438,6 +1868,22 @@ export function App() {
       )}
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <AiPdfExportDialog
+        open={aiPdfDlgOpen}
+        busy={aiPdfExportBusy}
+        progress={aiPdfProgress}
+        status={aiPdfStatus}
+        error={aiPdfError}
+        onOpenChange={(open) => {
+          if (!open && aiPdfExportBusy) return;
+          setAiPdfDlgOpen(open);
+          if (!open) {
+            setAiPdfError(null);
+            setAiPdfProgress(0);
+            setAiPdfStatus("");
+          }
+        }}
+      />
       <TemplatePicker
         open={templatePickerOpen}
         onClose={() => setTemplatePickerOpen(false)}

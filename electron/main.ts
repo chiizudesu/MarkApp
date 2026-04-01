@@ -108,16 +108,28 @@ function createWindow() {
   mainWindow.on('close', (e) => {
     if (!dirtyFlag) return;
     e.preventDefault();
-    const res = dialog.showMessageBoxSync(mainWindow!, {
+    const win = mainWindow;
+    if (!win) return;
+    const res = dialog.showMessageBoxSync(win, {
       type: 'question',
-      buttons: ['Cancel', 'Discard changes'],
-      defaultId: 0,
+      buttons: ['Save', "Don't save", 'Cancel'],
+      cancelId: 2,
+      defaultId: 2,
       message: 'Unsaved changes',
-      detail: 'Discard changes and close?',
+      detail: 'Save your work before closing?',
     });
-    if (res === 0) return;
-    dirtyFlag = false;
-    mainWindow?.destroy();
+    if (res === 2) return;
+    if (res === 1) {
+      dirtyFlag = false;
+      win.destroy();
+      return;
+    }
+    ipcMain.once('mark:save-before-close-done', (_evt, ok: boolean) => {
+      if (!ok || !mainWindow) return;
+      dirtyFlag = false;
+      mainWindow.destroy();
+    });
+    win.webContents.send('mark:request-save-before-close');
   });
 }
 
@@ -170,6 +182,17 @@ app.whenReady().then(() => {
     return p;
   });
 
+  ipcMain.handle('mark:dialog-save-pdf', async (_e, defaultPath?: string) => {
+    const r = await dialog.showSaveDialog(mainWindow!, {
+      defaultPath,
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+    if (r.canceled || !r.filePath) return null;
+    let p = r.filePath;
+    if (!p.toLowerCase().endsWith('.pdf')) p += '.pdf';
+    return p;
+  });
+
   ipcMain.handle('mark:dialog-open-directory', async () => {
     const r = await dialog.showOpenDialog(mainWindow!, {
       properties: ['openDirectory'],
@@ -196,6 +219,16 @@ app.whenReady().then(() => {
     }
   });
 
+  ipcMain.handle('mark:write-file-binary', async (_e, filePath: string, base64: string) => {
+    try {
+      const buf = Buffer.from(base64, 'base64');
+      writeFileSync(filePath, buf);
+      return { ok: true as const };
+    } catch (err) {
+      return { ok: false as const, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('mark:push-recent', (_e, filePath: string) => {
     const recent = store.get('recentFiles') ?? [];
     const next = [filePath, ...recent.filter((p) => p !== filePath)].slice(0, 12);
@@ -204,19 +237,17 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('mark:list-templates', async () => {
-    const bundledDir = getTemplatesDir();
     const userDir = ensureUserTemplatesDir();
-    const dirs = [bundledDir, userDir];
+    const dirs: string[] = [userDir];
     const custom = store.get('templateFolderPath');
     if (custom && existsSync(custom)) dirs.push(custom);
 
-    const files: Array<{ path: string; name: string; source: 'bundled' | 'user' | 'custom' }> = [];
+    const files: Array<{ path: string; name: string; source: 'user' | 'custom' }> = [];
     const seen = new Set<string>();
     for (const d of dirs) {
       if (!existsSync(d)) continue;
-      let source: 'bundled' | 'user' | 'custom' = 'bundled';
-      if (d === userDir) source = 'user';
-      else if (custom && d === custom) source = 'custom';
+      let source: 'user' | 'custom' = 'user';
+      if (custom && d === custom) source = 'custom';
       try {
         for (const name of readdirSync(d)) {
           if (!name.endsWith('.md') && !name.endsWith('.markdown')) continue;

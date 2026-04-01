@@ -73,6 +73,48 @@ export function manualSectionMarkerImmediatelyBeforeBlock(
 /** Plate often serializes “empty” paragraphs as a zero‑width space; treat as blank for outline gaps. */
 const OUTLINE_BLANK_STRIP = /[\u200B-\u200D\uFEFF]/g;
 
+/**
+ * Plate markdown can emit XML-style numeric character references for C1/control chars (e.g. `&#xA;` for LF).
+ * Those literals must not appear as outline row labels after bold/backspace edits.
+ */
+function decodeXmlishNumericCharRefs(s: string): string {
+  return s
+    .replace(/&#x([0-9a-fA-F]{1,6});/g, (full, hex: string) => {
+      const cp = Number.parseInt(hex, 16);
+      if (!Number.isFinite(cp) || cp < 0 || cp > 0x10ffff) return full;
+      try {
+        return String.fromCodePoint(cp);
+      } catch {
+        return full;
+      }
+    })
+    .replace(/&#([0-9]{1,7});/g, (full, dec: string) => {
+      const cp = Number.parseInt(dec, 10);
+      if (!Number.isFinite(cp) || cp < 0 || cp > 0x10ffff) return full;
+      try {
+        return String.fromCodePoint(cp);
+      } catch {
+        return full;
+      }
+    });
+}
+
+/** Single-line outline / agent pin title: decode entities, drop control chars, collapse whitespace. */
+function normalizeOutlineRowTitle(raw: string): string {
+  let s = decodeXmlishNumericCharRefs(raw);
+  s = s.replace(OUTLINE_BLANK_STRIP, "");
+  s = s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]+/g, " ");
+  s = s.replace(/\s+/g, " ").trim();
+  return s;
+}
+
+function normalizeOutlineMarkerTitles(markers: HeadingMarker[]): HeadingMarker[] {
+  return markers.map((m) => {
+    const title = normalizeOutlineRowTitle(m.title);
+    return { ...m, title: title.length > 0 ? title : "(Section)" };
+  });
+}
+
 export function isOutlineBlankLine(line: string): boolean {
   return line.replace(OUTLINE_BLANK_STRIP, "").trim() === "";
 }
@@ -145,14 +187,14 @@ export function collectBoldOnlyParagraphHints(
     const type = (node as { type?: string })?.type;
 
     if (headingLevelFromType(type) > 0) {
-      const title = plateParagraphPlainText(node);
-      if (title.replace(OUTLINE_BLANK_STRIP, "").trim().length === 0) continue;
+      const title = normalizeOutlineRowTitle(plateParagraphPlainText(node));
+      if (title.length === 0) continue;
       hints.push({ mdStart, title });
       continue;
     }
 
     if (!isBoldOnlyPlateParagraph(node)) continue;
-    const title = plateParagraphPlainText(node);
+    const title = normalizeOutlineRowTitle(plateParagraphPlainText(node));
     if (title.length < 2 || title.length > 88) continue;
     hints.push({ mdStart, title });
   }
@@ -527,9 +569,9 @@ function mergeBoldBlockHints(
     if (byFrom.has(h.mdStart)) continue;
     const hintLine = lineIndexAtDocOffset(doc, h.mdStart);
     let sameLineSameTitle = false;
-    const hintNorm = h.title.replace(OUTLINE_BLANK_STRIP, "").trim().toLowerCase();
+    const hintNorm = normalizeOutlineRowTitle(h.title).toLowerCase();
     for (const m of byFrom.values()) {
-      const mNorm = m.title.replace(OUTLINE_BLANK_STRIP, "").trim().toLowerCase();
+      const mNorm = normalizeOutlineRowTitle(m.title).toLowerCase();
       if (mNorm !== hintNorm) continue;
       if (lineIndexAtDocOffset(doc, m.from) === hintLine) {
         sameLineSameTitle = true;
@@ -719,7 +761,7 @@ function markersToDocSections(deduped: HeadingMarker[], doc: string): DocSection
  */
 export function getSectionsFromText(doc: string): DocSection[] {
   const { deduped: raw } = collectHeadingMarkersFromMarkdown(doc);
-  let deduped = postProcessOutlineMarkers(doc, raw);
+  let deduped = postProcessOutlineMarkers(doc, normalizeOutlineMarkerTitles(raw));
   if (shouldTreatWholeDocAsOneOutlineSection(doc)) {
     deduped = inferSingleBodySectionMarker(doc);
   } else {
@@ -743,13 +785,14 @@ export function getSectionsFromText(doc: string): DocSection[] {
     ];
   }
 
+  deduped = normalizeOutlineMarkerTitles(deduped);
   return markersToDocSections(deduped, doc);
 }
 
 /** Same as getSectionsFromText but merges WYSIWYG bold-only paragraphs that omit `**` in the string. */
 export function getSectionsFromTextWithBoldBlockHints(doc: string, hints: OutlineBoldBlockHint[]): DocSection[] {
   const { deduped: d0 } = collectHeadingMarkersFromMarkdown(doc);
-  const merged = mergeBoldBlockHints(d0, hints, doc);
+  const merged = mergeBoldBlockHints(normalizeOutlineMarkerTitles(d0), hints, doc);
   const afterPost = postProcessOutlineMarkers(doc, merged);
 
   let deduped: HeadingMarker[] = [];
@@ -783,6 +826,7 @@ export function getSectionsFromTextWithBoldBlockHints(doc: string, hints: Outlin
     ];
   }
 
+  deduped = normalizeOutlineMarkerTitles(deduped);
   return markersToDocSections(deduped, doc);
 }
 
@@ -826,6 +870,8 @@ export function normOutlineTitleKey(s: string): string {
  * `DocSection.from`, so the offset may still fall in the *previous* section for heading blocks.
  * Heading blocks are matched by normalized title; duplicate titles fall back to nearest `from` in a small window.
  */
+const EDITOR_BLOCK_SECTION_SLACK = 24;
+
 export function getSectionForEditorBlock(
   sections: DocSection[],
   blockStartOffset: number,
@@ -839,13 +885,23 @@ export function getSectionForEditorBlock(
     if (candidates.length === 1) return candidates[0]!;
     if (candidates.length > 1) {
       const windowed = candidates.filter(
-        (s) => blockStartOffset >= s.from - 12 && blockStartOffset < s.to + 12,
+        (s) => blockStartOffset >= s.from - EDITOR_BLOCK_SECTION_SLACK && blockStartOffset < s.to + EDITOR_BLOCK_SECTION_SLACK,
       );
       windowed.sort((a, b) => Math.abs(blockStartOffset - a.from) - Math.abs(blockStartOffset - b.from));
       if (windowed[0]) return windowed[0]!;
     }
   }
-  return getSectionAtPos(sections, blockStartOffset);
+  const byPos = getSectionAtPos(sections, blockStartOffset);
+  // Heading block with empty WYSIWYG title: offset can sit just before the heading line in markdown.
+  if (hl > 0 && headingPlainText.replace(OUTLINE_BLANK_STRIP, "").trim().length === 0) {
+    const headings = sections.filter((s) => s.level > 0).sort((a, b) => a.from - b.from);
+    for (const h of headings) {
+      if (blockStartOffset <= h.from && h.from - blockStartOffset <= EDITOR_BLOCK_SECTION_SLACK) {
+        return h;
+      }
+    }
+  }
+  return byPos;
 }
 
 /**

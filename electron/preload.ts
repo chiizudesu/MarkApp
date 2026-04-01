@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
-export type TemplateListItem = { path: string; name: string; source: 'bundled' | 'user' | 'custom' };
+export type TemplateListItem = { path: string; name: string; source: 'user' | 'custom' };
 
 const markAPI = {
   getStore: <K extends string>(key: K) => ipcRenderer.invoke('mark:get-store', key),
@@ -10,6 +10,8 @@ const markAPI = {
   dialogOpen: () => ipcRenderer.invoke('mark:dialog-open') as Promise<string | null>,
   dialogSave: (defaultPath?: string) =>
     ipcRenderer.invoke('mark:dialog-save', defaultPath) as Promise<string | null>,
+  dialogSavePdf: (defaultPath?: string) =>
+    ipcRenderer.invoke('mark:dialog-save-pdf', defaultPath) as Promise<string | null>,
   dialogOpenDirectory: () =>
     ipcRenderer.invoke('mark:dialog-open-directory') as Promise<string | null>,
   readFile: (filePath: string) =>
@@ -18,6 +20,10 @@ const markAPI = {
     >,
   writeFile: (filePath: string, content: string) =>
     ipcRenderer.invoke('mark:write-file', filePath, content) as Promise<
+      { ok: true } | { ok: false; error: string }
+    >,
+  writeFileBinary: (filePath: string, base64: string) =>
+    ipcRenderer.invoke('mark:write-file-binary', filePath, base64) as Promise<
       { ok: true } | { ok: false; error: string }
     >,
   pushRecent: (filePath: string) => ipcRenderer.invoke('mark:push-recent', filePath) as Promise<string[]>,
@@ -39,6 +45,15 @@ const markAPI = {
     const listener = (_e: unknown, state: { maximized: boolean }) => callback(state.maximized);
     ipcRenderer.on('mark:window-state', listener);
     return () => ipcRenderer.removeListener('mark:window-state', listener);
+  },
+  subscribeSaveBeforeClose: (run: () => Promise<boolean>) => {
+    const listener = () => {
+      void run().then((ok) => {
+        ipcRenderer.send('mark:save-before-close-done', ok);
+      });
+    };
+    ipcRenderer.on('mark:request-save-before-close', listener);
+    return () => ipcRenderer.removeListener('mark:request-save-before-close', listener);
   },
 };
 

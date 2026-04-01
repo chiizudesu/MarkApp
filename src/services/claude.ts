@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { MessageParam } from "@anthropic-ai/sdk/resources";
 import { requireMarkAPI } from "@/services/markApi";
 import { formatDocumentOutlineForAgent, type DocSection } from "@/services/sectionService";
+import { parsePdfLayoutSpecFromAiJson, type PdfLayoutSpec } from "@/types/pdfLayoutSpec";
 
 /** Used when Settings has no stored model (empty store / first run). */
 export const DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5";
@@ -45,6 +46,10 @@ export async function testAnthropicConnection(apiKey: string, model: string): Pr
 const MARKDOWN_AGENT_SYSTEM = `You are a writing assistant inside MarkApp, a markdown editor.
 Every message includes --- CURRENT DOCUMENT --- with what is in the editor (it may be empty or a single placeholder line like "#"). Do not claim you cannot see the document; use that block and the chat history.
 
+**Direct editor output:** MarkApp often pastes your **entire** assistant message into the document as markdown—as the body of a single pinned section, as the full document when it is new/empty, or as a whole-file replacement when you produce a complete revised draft. In those situations your reply must be **only** the markdown that belongs in the file: no questions to the user, no “would you like…”, no offers to clarify, no preambles (“Here’s a draft:”), no postscripts, and no meta-commentary. If something is ambiguous, pick the most reasonable interpretation and write the content; do not ask follow-ups in the document stream. Short status lines belong in chat-only turns (see below), not in text that will land in the editor.
+
+When a message includes --- MARKAPP OUTPUT MODE: DIRECT TO EDITOR ---, that rule is mandatory for this turn: output nothing but the file-ready markdown.
+
 When present, --- DOCUMENT OUTLINE (MarkApp) --- lists each logical section: heading level (or preamble before first heading), stable id, title, and character ranges that refer **to the same string** as CURRENT DOCUMENT. Use it for anything about structure: headings, outline, TOC, splitting or merging topics, “optimize/improve/fix sectioning”, hierarchy (# vs ## vs ###), or where a section starts and ends. MarkApp treats each ATX heading as starting a section until the next heading at the same or higher level.
 
 Standalone HTML comment lines \`<!--markapp-manual-section-->\` (spacing inside the tag may vary) are **manual section breaks** the author placed. When you output an updated full document or reorganize structure, **keep every such line** on its own line, in order, between the same surrounding content—never delete them unless the user explicitly asks to remove manual section breaks.
@@ -52,12 +57,21 @@ Standalone HTML comment lines \`<!--markapp-manual-section-->\` (spacing inside 
 For sectioning / outline tasks: propose sensible ##/### structure (avoid skipping levels without reason), one main idea per section, merge duplicates, add headings where the topic clearly shifts, remove orphan or redundant headings, and **preserve the author’s wording** unless they asked to rewrite prose. Output the **complete updated markdown document** when changing structure across the file (same as a full-document edit).
 
 Help refine, structure, or expand the user's document. Prefer clear, concise markdown.
+Use **GitHub-Flavored Markdown** for structure: tables as pipe tables (| columns |), never HTML \`<table>\` / \`<div>\` markup. Do not output raw HTML except the manual section-break comment line described above and fenced code blocks when the user needs a literal code sample. Use normal markdown for headings, lists, emphasis, and links.
+
 When the user asks to apply, insert, or use a prior reply in the document, output the full markdown that should appear in the editor (often the same as your last substantive answer), not a refusal.
 
 When the user asks you to rewrite a specific section only, respond with ONLY the replacement markdown for that section — no preamble, no code fences, unless the section itself should contain a fenced block.
-For general questions, answer normally in markdown.`;
 
-const SECTION_REPLACE_SYSTEM = `You rewrite a markdown SECTION. Output ONLY the new section text (including its heading line if one should remain). No explanations, no markdown fences around the whole response.`;
+For **chat-only** answers (e.g. explaining a concept when no section is pinned and the user did not ask for document text), you may answer in normal markdown prose; those replies are not inserted into the file. Still avoid ending with questions unless the user is clearly in a conversational Q&A turn.`;
+
+/** Appended to the agent system prompt when Settings → “Disallow agent to use code blocks” is on. */
+const AGENT_DISALLOW_OUTER_CODE_FENCES = `--- USER PREFERENCE: NO OUTER CODE FENCES ---
+Never wrap your entire reply, or the full document or section meant for the MarkApp editor, in markdown code fences (\`\`\` ... \`\`\`). Output raw markdown the editor can ingest directly.
+Do not start your message with \`\`\` or \`\`\`markdown. Headings, lists, and paragraphs should be normal markdown lines.
+You may use a fenced block only for a genuine code or configuration snippet when the user clearly asks for code—or when reproducing a short literal the document must contain. Do not use fences as a wrapper for ordinary prose.`;
+
+const SECTION_REPLACE_SYSTEM = `You rewrite a markdown SECTION. Output ONLY the new section text (including its heading line if one should remain). No explanations, no questions, no markdown fences around the whole response. Use GFM markdown only (pipe tables if you need a table, not HTML tags). If the instruction is ambiguous, choose the best interpretation and write the section—do not ask the user for clarification in your output.`;
 
 const AUTO_SECTION_SYSTEM = `You structure plain markdown by adding ## section headings only. Split the text into clear topical sections. Preserve all original wording and paragraph breaks; insert heading lines (## Title) where appropriate and blank lines around headings.
 
@@ -92,8 +106,17 @@ export async function streamChat(
 export async function streamAgentTurn(
   messages: MessageParam[],
   onChunk: (t: string) => void,
+  options?: { systemSuffix?: string; disallowCodeBlocks?: boolean },
 ): Promise<string> {
-  return streamChat(MARKDOWN_AGENT_SYSTEM, messages, onChunk);
+  let system = MARKDOWN_AGENT_SYSTEM;
+  if (options?.disallowCodeBlocks) {
+    system += `\n\n${AGENT_DISALLOW_OUTER_CODE_FENCES}`;
+  }
+  const suffix = options?.systemSuffix?.trim();
+  if (suffix && suffix.length > 0) {
+    system += `\n\n--- USER / APPENDED INSTRUCTIONS ---\n${suffix}`;
+  }
+  return streamChat(system, messages, onChunk);
 }
 
 /** Insert ## headings into unstructured markdown. */
@@ -193,7 +216,63 @@ export async function fillPlaceholdersWithAI(
   }
 }
 
+const PDF_LAYOUT_SYSTEM = `You map markdown into a JSON print layout for PDF generation. Output ONLY valid JSON (no markdown fences, no commentary).
+
+**Content fidelity (critical):**
+- Copy all user-facing text **verbatim** from the markdown into JSON string fields. Do **not** paraphrase, summarize, tighten, expand, explain, or add sentences, bullets, headings, labels, or callouts that are not in the source.
+- **Forbidden output patterns (the app renders real structure — never replace the doc with a synopsis):** Do not use titles or headings like "Summary of the document", "Overview", "Synopsis", or framing like "This document covers:" / "This guide covers:" unless that **exact** phrase appears in the source. Do not collapse the document into a short bullet list of topic blurbs. Do not add editorial paragraphs about "structural issues", code fences, or what "should be cleaned up" unless that text is literally in the file.
+- Do **not** output "callout" blocks.
+- **meta.title** = exact text of the first # heading if any, else first non-empty source line, else "Untitled". **meta.accentColor** = #RRGGBB only (visual).
+- Strip markdown **syntax** only: remove # but keep heading text exactly; unwrap ** / * / \` without changing words; link label text verbatim (omit URL unless shown as text in source).
+- Preserve **document order** and **approximate block count**: each source heading → one "heading"; each paragraph → "paragraph"; each list → "bullets" with one string per list item (full item text verbatim, not a shortened description).
+
+**Visual hints (optional JSON fields — change presentation only, never wording):**
+- "heading" may include "style": "pill" | "accent_bar" | "plain". Prefer "pill" for ##/### and "accent_bar" for # when it fits the source hierarchy. Use "plain" only for dense reference-style sections.
+- "bullets" may include "style": "pills" | "cards" | "plain". Use "pills" when many items match "Label – rest" / "Label - rest" / "Label: rest" patterns (same characters as in source). Use "cards" for other lists. Use "plain" only if the list is extremely long and tight.
+- "paragraph" may include "variant": "lead" for the opening paragraph immediately after the title when it is a normal intro paragraph in the source (not for headings).
+
+**Structure:**
+- Start with one "title" block equal to meta.title (verbatim).
+- Mirror the markdown in order: headings, paragraphs, lists, tables, dividers as they appear.
+- "divider" only for --- or *** on its own line in the source.
+- **Tables:** pipe tables → { "type":"table","headers":[],"rows":[] } with verbatim cells; same column counts; only structural exception allowed.
+
+**Truncated input:** Map only the excerpt verbatim; do not invent endings.
+
+**JSON shape:** { "meta": { "title": string, "accentColor": "#RRGGBB" }, "blocks": Block[] }
+Block = { "type":"title","text":string } | { "type":"heading","level":1|2|3,"text":string,"style"?:string } | { "type":"paragraph","text":string,"variant"?:string } | { "type":"bullets","items":string[],"style"?:string } | { "type":"table","headers":string[],"rows":string[][] } | { "type":"divider" }
+Never use "callout". "blocks" must be non-empty.`;
+
 const CHANGE_SUMMARY_SYSTEM = `You summarize edits made to a markdown section. Return ONLY a JSON array of ≤5 short strings, each describing one concrete change (e.g. "Tightened the opening sentence", "Added detail on X"). No intro text, no markdown, no keys — just the raw JSON array.`;
+
+const PDF_LAYOUT_INPUT_MAX_CHARS = 50_000;
+
+/** Turn markdown into a validated PDF layout spec (for pdf-lib rendering). */
+export async function generatePdfLayoutFromMarkdown(markdown: string): Promise<PdfLayoutSpec> {
+  const trimmed = markdown.trim();
+  if (!trimmed) throw new Error("Document is empty.");
+
+  const excerpt =
+    trimmed.length > PDF_LAYOUT_INPUT_MAX_CHARS ? trimmed.slice(0, PDF_LAYOUT_INPUT_MAX_CHARS) : trimmed;
+  const truncated = trimmed.length > PDF_LAYOUT_INPUT_MAX_CHARS;
+
+  const apiKey = await getKey();
+  const model = await getModel();
+  const c = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
+  const userText = truncated
+    ? `The following markdown may be truncated to the first ${PDF_LAYOUT_INPUT_MAX_CHARS} characters. Map it to JSON layout with **verbatim** text only (see system rules). Do not invent content.\n\n---\n\n${excerpt}`
+    : `Map the following markdown to the JSON layout with **verbatim** text only. Do not invent content.\n\n---\n\n${excerpt}`;
+
+  const resp = await c.messages.create({
+    model,
+    max_tokens: 16384,
+    system: PDF_LAYOUT_SYSTEM,
+    messages: [{ role: "user", content: userText }],
+    temperature: 0.15,
+  });
+  const raw = resp.content[0]?.type === "text" ? resp.content[0].text : "";
+  return parsePdfLayoutSpecFromAiJson(raw);
+}
 
 /** Returns up to 5 bullet strings summarising what changed between oldText → newText. Never throws (returns [] on error). */
 export async function summarizeSectionChanges(
@@ -226,6 +305,10 @@ export async function summarizeSectionChanges(
   }
 }
 
+/** When true, the app will paste the assistant’s full reply into the editor (single pin or blank doc). */
+export const MARKAPP_DIRECT_EDITOR_BANNER = `--- MARKAPP OUTPUT MODE: DIRECT TO EDITOR ---
+Your entire reply for this turn is written into the document verbatim. Output only markdown that belongs in the file: no questions, no conversational wrappers, no “let me know”.`;
+
 export function buildAgentUserPayload(parts: {
   instruction: string;
   fullDocument: string;
@@ -234,8 +317,13 @@ export function buildAgentUserPayload(parts: {
   documentSections?: DocSection[];
   mentionDocument?: boolean;
   mentionClipboard?: string | null;
+  /** Single pinned section or blank document: full assistant message replaces editor content. */
+  directEditorOutput?: boolean;
 }): string {
   const blocks: string[] = [];
+  if (parts.directEditorOutput) {
+    blocks.push(MARKAPP_DIRECT_EDITOR_BANNER);
+  }
   const docLabel = parts.mentionDocument
     ? "--- FULL DOCUMENT (@document) ---"
     : "--- CURRENT DOCUMENT ---";

@@ -6,6 +6,7 @@ import {
   renderTemplate,
 } from "@/services/templateService";
 import { fillPlaceholdersWithAI } from "@/services/claude";
+import { toaster } from "@/components/ui/toaster";
 
 export function PlaceholderForm(props: {
   templateBody: string;
@@ -47,7 +48,11 @@ export function PlaceholderForm(props: {
       setValues((prev) => ({ ...prev, ...filled }));
     } catch (e) {
       console.error(e);
-      alert((e as Error).message);
+      toaster.create({
+        type: "error",
+        title: "AI fill failed",
+        description: (e as Error).message,
+      });
     } finally {
       setAiBusy(false);
     }
@@ -57,14 +62,14 @@ export function PlaceholderForm(props: {
     <VStack gap={3} align="stretch" p={4}>
       {placeholders.map((p) => (
         <Field.Root key={p}>
-          <Field.Label fontSize="sm">{`{{${p}}}`}</Field.Label>
+          <Field.Label fontSize="sm" color="fg">{`{{${p}}}`}</Field.Label>
           <Input
             size="sm"
             variant="outline"
             value={values[p] ?? ""}
             onChange={(e) => setValues((v) => ({ ...v, [p]: e.target.value }))}
-            bg={{ _light: "white", _dark: "gray.900" }}
-            borderColor={{ _light: "gray.300", _dark: "gray.500" }}
+            bg="bg"
+            borderColor="border"
           />
         </Field.Root>
       ))}
@@ -75,22 +80,22 @@ export function PlaceholderForm(props: {
           onCheckedChange={(d) => setCondVals((v) => ({ ...v, [c]: d.checked === true }))}
         >
           <Checkbox.HiddenInput />
-          <Checkbox.Control>
+          <Checkbox.Control borderColor="border.emphasized">
             <Checkbox.Indicator />
           </Checkbox.Control>
-          <Checkbox.Label>{`{{#if ${c}}}`}</Checkbox.Label>
+          <Checkbox.Label color="fg">{`{{#if ${c}}}`}</Checkbox.Label>
         </Checkbox.Root>
       ))}
       <Field.Root>
-        <Field.Label>AI fill from brief (optional)</Field.Label>
+        <Field.Label color="fg">AI fill from brief (optional)</Field.Label>
         <Textarea
           value={aiBrief}
           onChange={(e) => setAiBrief(e.target.value)}
           size="sm"
           rows={3}
           variant="outline"
-          bg={{ _light: "white", _dark: "gray.900" }}
-          borderColor={{ _light: "gray.300", _dark: "gray.500" }}
+          bg="bg"
+          borderColor="border"
         />
         <Button mt={2} size="sm" variant="outline" loading={aiBusy} onClick={() => void aiFill()}>
           Fill with AI

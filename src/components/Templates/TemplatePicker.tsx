@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { Dialog, Portal, Button, Text, VStack, Box } from "@chakra-ui/react";
-import { PlaceholderForm } from "./PlaceholderForm";
+import { Dialog, Portal, Button, Text, VStack, Box, Flex, HStack } from "@chakra-ui/react";
 
 type Item = { path: string; name: string; source: string };
 
@@ -10,20 +9,14 @@ export function TemplatePicker(props: {
   onCreateFromMarkdown: (md: string) => void;
 }) {
   const [items, setItems] = useState<Item[]>([]);
-  const [pick, setPick] = useState<Item | null>(null);
-  const [body, setBody] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!props.open) {
-      setPick(null);
-      setBody(null);
-      return;
-    }
+    if (!props.open) return;
     const api = window.markAPI;
     if (api) void api.listTemplates().then(setItems);
   }, [props.open]);
 
-  const choose = async (it: Item) => {
+  const openTemplate = async (it: Item) => {
     const api = window.markAPI;
     if (!api) return;
     const r = await api.readFile(it.path);
@@ -31,74 +24,91 @@ export function TemplatePicker(props: {
       alert(r.error);
       return;
     }
-    setPick(it);
-    setBody(r.content);
+    props.onCreateFromMarkdown(r.content);
+    props.onClose();
   };
 
   return (
-    <Dialog.Root open={props.open} onOpenChange={(e) => !e.open && props.onClose()} size="xl">
+    <Dialog.Root open={props.open} onOpenChange={(e) => !e.open && props.onClose()} placement="center">
       <Portal>
-        <Dialog.Backdrop bg="blackAlpha.600" />
+        <Dialog.Backdrop bg="blackAlpha.700" />
         <Dialog.Positioner>
           <Dialog.Content
-            maxW="640px"
-            maxH="90vh"
+            maxW="min(90vw, 640px)"
+            w="full"
+            p={0}
             overflow="hidden"
             display="flex"
             flexDirection="column"
-            bg={{ _light: "white", _dark: "gray.800" }}
+            maxH="85vh"
+            bg="bg"
             borderWidth="1px"
-            borderColor={{ _light: "gray.200", _dark: "gray.600" }}
+            borderColor="border"
             shadow="lg"
           >
-            <Box p={4} borderBottomWidth="1px" borderColor={{ _light: "gray.200", _dark: "gray.600" }}>
-              <Text fontWeight="bold">New from template</Text>
-              <Text fontSize="xs" color="fg.muted" mt={1}>
-                Pick a template, then fill placeholders.
+            <Box
+              px={6}
+              pt={5}
+              pb={4}
+              borderBottomWidth="1px"
+              borderColor="border.muted"
+              bg="bg.subtle"
+              flexShrink={0}
+            >
+              <Text fontWeight="semibold" fontSize="xl" color="fg" letterSpacing="tight">
+                Templates
+              </Text>
+              <Text fontSize="sm" color="fg.muted" mt={1} lineHeight="short">
+                Your saved templates and markdown files in the extra template folder (Settings → Files). Select one to
+                open as a new document.
               </Text>
             </Box>
-            {!body ? (
-              <VStack align="stretch" p={4} overflowY="auto" flex="1" gap={1}>
-                {items.length === 0 && <Text fontSize="sm" color="fg.muted">No templates found.</Text>}
-                {items.map((it) => (
-                  <Button
-                    key={it.path}
-                    variant="outline"
-                    size="sm"
-                    justifyContent="flex-start"
-                    onClick={() => void choose(it)}
-                    borderColor={{ _light: "gray.300", _dark: "gray.600" }}
-                    bg={{ _light: "gray.50", _dark: "gray.900" }}
-                    _hover={{ bg: { _light: "gray.100", _dark: "gray.700" } }}
-                  >
-                    {it.name}{" "}
-                    <Text as="span" ml={2} fontSize="xs" color="fg.muted">
-                      ({it.source})
+
+            <Flex direction="column" flex="1" minH={0} overflow="hidden">
+              <Box flex="1" minH={0} overflowY="auto" px={6} py={5}>
+                <VStack align="stretch" gap={2}>
+                  {items.length === 0 && (
+                    <Text fontSize="sm" color="fg.muted">
+                      No templates found. Save templates in Template manager or set an extra template folder under
+                      Settings → Files.
                     </Text>
-                  </Button>
-                ))}
-                <Button variant="ghost" onClick={props.onClose}>
-                  Cancel
-                </Button>
-              </VStack>
-            ) : (
-              <Box overflowY="auto" flex="1" bg={{ _light: "gray.50", _dark: "blackAlpha.300" }}>
-                <Text fontSize="sm" px={4} pt={3} fontWeight="medium">
-                  {pick?.name}
-                </Text>
-                <PlaceholderForm
-                  templateBody={body}
-                  onApply={(md) => {
-                    props.onCreateFromMarkdown(md);
-                    props.onClose();
-                  }}
-                  onCancel={() => {
-                    setPick(null);
-                    setBody(null);
-                  }}
-                />
+                  )}
+                  {items.map((it) => (
+                    <Button
+                      key={it.path}
+                      variant="outline"
+                      size="sm"
+                      justifyContent="flex-start"
+                      onClick={() => void openTemplate(it)}
+                      borderColor="border"
+                      bg="bg"
+                      _hover={{ bg: "bg.muted" }}
+                    >
+                      <Text as="span" truncate flex="1" textAlign="left">
+                        {it.name}
+                      </Text>
+                      <Text as="span" ml={2} fontSize="xs" color="fg.muted" flexShrink={0}>
+                        ({it.source})
+                      </Text>
+                    </Button>
+                  ))}
+                </VStack>
               </Box>
-            )}
+              <HStack
+                gap={2}
+                justify="flex-end"
+                px={6}
+                py={4}
+                borderTopWidth="1px"
+                borderColor="border.muted"
+                bg="bg.subtle"
+                flexShrink={0}
+              >
+                <Button variant="ghost" onClick={props.onClose}>
+                  Close
+                </Button>
+              </HStack>
+            </Flex>
           </Dialog.Content>
         </Dialog.Positioner>
       </Portal>

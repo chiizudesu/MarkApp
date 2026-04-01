@@ -222,11 +222,19 @@ export function TextSelectionFloatingToolbar({
       const viewportH = typeof window !== "undefined" ? window.innerHeight : 800;
       const belowTop = rect.bottom + GAP_PX;
       const aboveTop = rect.top - GAP_PX;
-      const useBelow = belowTop + 100 < viewportH;
+      /** Prefer above the selection; fall back to below when the viewport top would clip the toolbar. */
+      const toolbarEstimatePx = 100;
+      const minTopMargin = 52;
+      const canFitAbove = aboveTop - toolbarEstimatePx >= minTopMargin;
+      const canFitBelow = belowTop + toolbarEstimatePx < viewportH;
+      const place: "above" | "below" =
+        canFitAbove ? "above" : canFitBelow ? "below" : "above";
+      const top =
+        place === "above" ? Math.max(minTopMargin, aboveTop) : belowTop;
       setLayout({
-        top: useBelow ? belowTop : Math.max(52, aboveTop),
+        top,
         left: rect.left + rect.width / 2,
-        place: useBelow ? "below" : "above",
+        place,
       });
     } catch {
       setLayout(null);

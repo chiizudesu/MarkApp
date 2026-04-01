@@ -17,6 +17,7 @@ import {
   Square,
   Copy,
   X,
+  Sparkles,
 } from "lucide-react";
 
 /** Same file as `<link rel="icon" href="./icon.png" />` (public → dist root). Taskbar uses `build/icons/win/icon.ico` — regenerate that .ico from this PNG so they match. */
@@ -136,7 +137,12 @@ export function TitleBar(props: {
   onSave: () => void;
   onSaveAs: () => void;
   onTemplateManager: () => void;
+  /** Opens template chooser (user templates + Settings extra folder). */
+  onOpenTemplates: () => void;
   onSettings: () => void;
+  /** Electron only; omitted in browser dev — button hidden. */
+  onExportAiPdf?: () => void;
+  aiPdfExportBusy?: boolean;
 }) {
   const [maximized, setMaximized] = useState(false);
   const { colorMode, setColorMode } = useColorMode();
@@ -274,6 +280,35 @@ export function TitleBar(props: {
             css={{ _icon: { boxSize: "4" } }}
           >
             <Save size={16} />
+          </IconButton>
+        </TTip>
+
+        {props.onExportAiPdf ? (
+          <TTip label={props.aiPdfExportBusy ? "Generating PDF…" : "Export AI-enhanced PDF"}>
+            <IconButton
+              aria-label="Export AI-enhanced PDF"
+              size="sm"
+              variant="ghost"
+              {...chromeGhostIconProps}
+              disabled={props.aiPdfExportBusy}
+              onClick={() => props.onExportAiPdf?.()}
+              css={{ _icon: { boxSize: "4" } }}
+            >
+              <Sparkles size={16} />
+            </IconButton>
+          </TTip>
+        ) : null}
+
+        <TTip label="Open a template (user folder and Settings → Files)">
+          <IconButton
+            aria-label="Open template"
+            size="sm"
+            variant="ghost"
+            {...chromeGhostIconProps}
+            onClick={() => props.onOpenTemplates()}
+            css={{ _icon: { boxSize: "4" } }}
+          >
+            <LayoutTemplate size={16} />
           </IconButton>
         </TTip>
 

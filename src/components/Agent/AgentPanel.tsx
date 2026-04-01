@@ -2,10 +2,8 @@ import { Box, Flex } from "@chakra-ui/react";
 import { ChatMessageBubble } from "./ChatMessage";
 import { ChatInput } from "./ChatInput";
 import type { ChatMessage, SectionRef } from "@/types/agent";
-import {
-  normalizeAssistantMarkdownParagraphs,
-  stripStreamingOuterMarkdownCodeFence,
-} from "@/utils/markdownFence";
+import { stripStreamingOuterMarkdownCodeFence } from "@/utils/markdownFence";
+import { sanitizeAssistantMarkdownOutput } from "@/utils/agentMarkdownSanitize";
 
 export function AgentPanel(props: {
   messages: ChatMessage[];
@@ -33,7 +31,7 @@ export function AgentPanel(props: {
     props.streamingText && (props.contextSections.length === 1 || props.documentIsBlank)
       ? {
           oldText: props.documentIsBlank ? "" : props.contextSections[0]!.content,
-          newText: normalizeAssistantMarkdownParagraphs(
+          newText: sanitizeAssistantMarkdownOutput(
             stripStreamingOuterMarkdownCodeFence(props.streamingText),
           ),
           sectionTitle: props.documentIsBlank ? "Document" : props.contextSections[0]!.title,

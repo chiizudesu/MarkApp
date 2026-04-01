@@ -1,25 +1,25 @@
 import {
   forwardRef,
+  memo,
   useCallback,
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
   useRef,
   useState,
+  type ClipboardEvent,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import type { Value } from "platejs";
 import {
-  Editor,
-  Path,
   Range as SlateRange,
-  Text as SlateText,
   Transforms,
   type Editor as SlateEditor,
-  type NodeEntry,
 } from "slate";
 import { MarkdownPlugin } from "@platejs/markdown";
-import { Plate, PlateContent, usePlateEditor, useRedecorate, type PlateEditor as PlateEditorApi } from "platejs/react";
+import { Plate, PlateContent, usePlateEditor } from "platejs/react";
 import { Menu, Portal, Box, IconButton, Flex, Text, HStack, Spinner, Button } from "@chakra-ui/react";
+import { toaster } from "@/components/ui/toaster";
 import { Plus, Sparkles } from "lucide-react";
 import { modShiftShortcut } from "@/utils/platform";
 import { insertImageFromFiles } from "@platejs/media";
@@ -31,6 +31,7 @@ import {
   collectBoldOnlyParagraphHints,
   CONTEXT_SECTION_TITLE_MAX_CHARS,
   deriveContextSectionTitleFromMarkdown,
+  findDocSectionForOutlineMarkdownFrom,
   getSectionBlockIndexRangeForTopLevelIndex,
   getSectionAtPos,
   getSectionForEditorBlock,
@@ -47,17 +48,16 @@ import {
   type OutlineBoldBlockHint,
 } from "@/services/sectionService";
 import type { SectionRef } from "@/types/agent";
-import { computeDiffParts } from "@/services/diffService";
-import { normalizeAssistantMarkdownParagraphs } from "@/utils/markdownFence";
-
-/** useRedecorate() only works under `<Plate>` — bump `generation` from a parent layout effect after mutating decorate ref data. */
-function BumpPlateDecorations(props: { generation: number }) {
-  const redecorate = useRedecorate();
-  useLayoutEffect(() => {
-    queueMicrotask(() => redecorate());
-  }, [props.generation, redecorate]);
-  return null;
-}
+import {
+  classifyClipboardRichness,
+  htmlToPlainText,
+  parsePasteDefaultRichHandling,
+  readClipboardSnapshotAsync,
+  snapshotFromDataTransfer,
+  type ClipboardTextSnapshot,
+} from "@/services/clipboardPaste";
+import { htmlToGfmMarkdown } from "@/utils/htmlToGfmMarkdown";
+import { PasteFormattingDialog, type PasteFormattingChoice } from "./PasteFormattingDialog";
 
 /** Hit slop around the section band (~20px requested; ≥22 so the sparkle stays inside the zone). */
 const SECTION_HOVER_OUTSIDE_PX = 22;
@@ -121,9 +121,6 @@ function pointerInSectionStickyChrome(
   return inBand || inSparkle;
 }
 
-/** Visual gap between bar segments when a section spans multiple blocks (paragraphs). */
-const SECTION_GUTTER_SEGMENT_GAP_PX = 8;
-
 /** Horizontal line preview for “new section” spans block edges; extend past the right edge for affordance. */
 const INTER_BLOCK_GAP_LINE_EXTEND_RIGHT_PX = 52;
 
@@ -156,6 +153,14 @@ function interBlockGapHorizMeasureRoot(root: HTMLElement): HTMLElement {
   return root;
 }
 
+/**
+ * Left offset (relative to page rect `pr`) for gutter / pinned band alignment with body text.
+ * {@link interBlockGapHorizMeasureRoot} avoids using the UL/OL margin box, which indents gutters right.
+ */
+function gutterContentLeftPx(dom: HTMLElement, pr: DOMRectReadOnly): number {
+  return interBlockGapHorizMeasureRoot(dom).getBoundingClientRect().left - pr.left;
+}
+
 /** Inset gutter bars from the block’s top/bottom so they don’t visually touch adjacent lines. */
 const SECTION_GUTTER_BAR_MARGIN_Y_PX = 20;
 
@@ -178,7 +183,7 @@ function insetGutterBarVertically(
 }
 
 const gutterAccentPalette: Record<
-  "muted" | "hover" | "pinned",
+  "muted" | "hover" | "pinned" | "ai",
   { line: string; dot: string; shadow?: string }
 > = {
   muted: {
@@ -193,6 +198,11 @@ const gutterAccentPalette: Record<
     line: "rgba(139, 92, 246, 0.4)",
     dot: "rgb(168, 85, 247)",
     shadow: "0 0 0 1px rgba(167, 139, 250, 0.65), 0 0 10px rgba(192, 181, 253, 0.35)",
+  },
+  ai: {
+    line: "rgba(34, 197, 94, 0.55)",
+    dot: "rgb(22, 163, 74)",
+    shadow: "0 0 0 1px rgba(34, 197, 94, 0.45), 0 0 8px rgba(34, 197, 94, 0.22)",
   },
 };
 
@@ -218,10 +228,10 @@ function gutterAccentForBlock(
   return "muted";
 }
 
-/** One outline block: purple dot → vertical line → purple dot (no mid dot, no section blues). */
+/** One outline block: dot → vertical line → dot (purple sections or green AI span). */
 type SimpleGutterStrip = {
   key: string;
-  accent: "muted" | "hover" | "pinned";
+  accent: "muted" | "hover" | "pinned" | "ai";
   top: number;
   lineLeft: number;
   height: number;
@@ -312,6 +322,72 @@ function SimpleGutterStripView(props: { strip: SimpleGutterStrip; zIndex: number
   );
 }
 
+function blockRangeIntersectsHoverPin(
+  b0: number,
+  b1: number,
+  hoverBlocks: { b0: number; b1: number } | null,
+  pinnedBlocks: { b0: number; b1: number } | null,
+): boolean {
+  const overlaps = (x0: number, x1: number, y0: number, y1: number) => x0 <= y1 && x1 >= y0;
+  return (
+    (!!hoverBlocks && overlaps(b0, b1, hoverBlocks.b0, hoverBlocks.b1)) ||
+    (!!pinnedBlocks && overlaps(b0, b1, pinnedBlocks.b0, pinnedBlocks.b1))
+  );
+}
+
+function blockRangesOverlap(a0: number, a1: number, b0: number, b1: number): boolean {
+  return a0 <= b1 && b0 <= a1;
+}
+
+/** Same geometry as {@link buildDocumentSectionGutterMarks} for one block span — one continuous dot-line-dot. */
+function layoutDotLineDotGutterStrip(params: {
+  editor: { api: { toDOMNode: (n: unknown) => HTMLElement | null } };
+  pr: DOMRectReadOnly;
+  children: Value;
+  b0: number;
+  b1: number;
+  key: string;
+  accent: "ai";
+}): SimpleGutterStrip | null {
+  const { editor, pr, children, b0, b1, key, accent } = params;
+  const blockPad = 6;
+  let minLeft: number | null = null;
+  let secTop: number | null = null;
+  let secBottom: number | null = null;
+  for (let i = b0; i <= b1 && i < children.length; i++) {
+    const dom = editor.api.toDOMNode(children[i] as unknown);
+    if (!dom || !(dom instanceof HTMLElement)) continue;
+    const br = dom.getBoundingClientRect();
+    const l = gutterContentLeftPx(dom, pr);
+    if (minLeft === null || l < minLeft) minLeft = l;
+    const t = br.top - pr.top;
+    const b = br.bottom - pr.top;
+    if (secTop === null || t < secTop) secTop = t;
+    if (secBottom === null || b > secBottom) secBottom = b;
+  }
+  if (minLeft === null || secTop === null || secBottom === null) return null;
+  const lineLeft = minLeft - blockPad - SECTION_GUTTER_BAR_OFFSET_LEFT_PX;
+  const rawTop = secTop - blockPad;
+  const rawBottom = secBottom + blockPad;
+  const { top, height } = insetGutterBarVertically(rawTop, rawBottom, 6);
+  return { key, accent, top, lineLeft, height };
+}
+
+function sectionStartInScrollViewport(
+  editor: { api: { toDOMNode: (n: unknown) => HTMLElement | null } },
+  scrollRoot: HTMLElement,
+  marginPx: number,
+  children: Value,
+  b0: number,
+): boolean {
+  if (b0 < 0 || b0 >= children.length) return false;
+  const dom = editor.api.toDOMNode(children[b0] as unknown);
+  if (!dom) return true;
+  const wr = scrollRoot.getBoundingClientRect();
+  const br = dom.getBoundingClientRect();
+  return !(br.bottom < wr.top - marginPx || br.top > wr.bottom + marginPx);
+}
+
 function buildDocumentSectionGutterMarks(params: {
   editor: { api: { toDOMNode: (n: unknown) => HTMLElement | null } };
   pr: DOMRectReadOnly;
@@ -320,36 +396,30 @@ function buildDocumentSectionGutterMarks(params: {
   docSections: DocSection[];
   hoverBlocks: { b0: number; b1: number } | null;
   pinnedBlocks: { b0: number; b1: number } | null;
+  /** When set, skip sections whose start block lies far outside the scroll viewport. */
+  scrollRoot: HTMLElement | null;
+  viewportMarginPx: number;
+  /** While AI green gutter covers this block span, omit purple section gutters there (no overlap). */
+  aiReplaceBlockRange: { b0: number; b1: number } | null;
 }): SimpleGutterStrip[] {
-  const { editor, pr, children, starts, docSections, hoverBlocks, pinnedBlocks } = params;
+  const {
+    editor,
+    pr,
+    children,
+    starts,
+    docSections,
+    hoverBlocks,
+    pinnedBlocks,
+    scrollRoot,
+    viewportMarginPx,
+    aiReplaceBlockRange,
+  } = params;
   const marks: SimpleGutterStrip[] = [];
   const blockPad = 6;
   const outlineSecs = docSections.filter((s) => s.level > 0);
 
-  let minLeft: number | null = null;
-  for (const sec of outlineSecs) {
-    const span = topLevelBlocksIntersectingMarkdownRange(starts, sec.from, sec.to);
-    if (!span) continue;
-    const [tb0, tb1] = trimBlockSpanToSection(
-      span[0],
-      span[1],
-      children as Array<{ type?: string }>,
-      starts,
-      sec,
-      docSections,
-    );
-    for (let i = tb0; i <= tb1 && i < children.length; i++) {
-      const dom = editor.api.toDOMNode(children[i] as unknown);
-      if (!dom) continue;
-      const br = dom.getBoundingClientRect();
-      const l = br.left - pr.left;
-      if (minLeft === null || l < minLeft) minLeft = l;
-    }
-  }
-  if (minLeft === null) return [];
-
-  const lineLeft = minLeft - blockPad - SECTION_GUTTER_BAR_OFFSET_LEFT_PX;
-
+  type SpanRec = { sec: DocSection; b0: number; b1: number };
+  const spanRecs: SpanRec[] = [];
   for (const sec of outlineSecs) {
     const span = topLevelBlocksIntersectingMarkdownRange(starts, sec.from, sec.to);
     if (!span) continue;
@@ -361,6 +431,28 @@ function buildDocumentSectionGutterMarks(params: {
       sec,
       docSections,
     );
+    const forceShow =
+      !scrollRoot ||
+      blockRangeIntersectsHoverPin(b0, b1, hoverBlocks, pinnedBlocks) ||
+      sectionStartInScrollViewport(editor, scrollRoot, viewportMarginPx, children, b0);
+    if (!forceShow) continue;
+    spanRecs.push({ sec, b0, b1 });
+  }
+
+  let minLeft: number | null = null;
+  for (const { b0: tb0, b1: tb1 } of spanRecs) {
+    for (let i = tb0; i <= tb1 && i < children.length; i++) {
+      const dom = editor.api.toDOMNode(children[i] as unknown);
+      if (!dom || !(dom instanceof HTMLElement)) continue;
+      const l = gutterContentLeftPx(dom, pr);
+      if (minLeft === null || l < minLeft) minLeft = l;
+    }
+  }
+  if (minLeft === null) return [];
+
+  const lineLeft = minLeft - blockPad - SECTION_GUTTER_BAR_OFFSET_LEFT_PX;
+
+  for (const { sec, b0, b1 } of spanRecs) {
 
     let secTop: number | null = null;
     let secBottom: number | null = null;
@@ -385,6 +477,13 @@ function buildDocumentSectionGutterMarks(params: {
       if (a === "hover") accent = "hover";
     }
 
+    if (
+      aiReplaceBlockRange &&
+      blockRangesOverlap(b0, b1, aiReplaceBlockRange.b0, aiReplaceBlockRange.b1)
+    ) {
+      continue;
+    }
+
     const rawTop = secTop - blockPad;
     const rawBottom = secBottom + blockPad;
     const { top, height } = insetGutterBarVertically(rawTop, rawBottom, 6);
@@ -394,80 +493,11 @@ function buildDocumentSectionGutterMarks(params: {
   return marks;
 }
 
-type SectionGutterSeg = { top: number; left: number; height: number };
-
-const PROPOSAL_SCOPE_LINE = "rgba(22, 163, 74, 0.42)";
-const PROPOSAL_SCOPE_LINE_WITH_DELETES =
-  "linear-gradient(180deg, rgba(239, 68, 68, 0.55) 0%, rgba(22, 163, 74, 0.42) 38%, rgba(22, 163, 74, 0.42) 100%)";
-
-/** Map diff parts to [start,end) offsets on the **new** string (equal + insert only). */
-function newSideInsertSpansFromDiffParts(parts: { op: number; text: string }[]): { start: number; end: number }[] {
-  const spans: { start: number; end: number }[] = [];
-  let newPos = 0;
-  for (const p of parts) {
-    if (p.op === 0) newPos += p.text.length;
-    else if (p.op === 1) {
-      spans.push({ start: newPos, end: newPos + p.text.length });
-      newPos += p.text.length;
-    }
-  }
-  return spans;
-}
-
-function collectTextRunsInBlockRange(ed: SlateEditor, b0: number, b1: number) {
-  const start = Editor.start(ed, [b0]);
-  const end = Editor.end(ed, [b1]);
-  const runs: { path: number[]; absStart: number; len: number }[] = [];
-  let abs = 0;
-  for (const [n, p] of Editor.nodes(ed, {
-    at: { anchor: start, focus: end },
-    match: (n): n is import("slate").Text => SlateText.isText(n),
-  })) {
-    runs.push({ path: p, absStart: abs, len: n.text.length });
-    abs += n.text.length;
-  }
-  return { runs, fullLen: abs };
-}
-
-type ProposalDecorateSpec =
-  | { enabled: false }
-  | {
-      enabled: true;
-      b0: number;
-      b1: number;
-      runs: { path: number[]; absStart: number; len: number }[];
-      insertSpans: { start: number; end: number }[];
-    };
-
-/** Proposal scope: thin edge bar; top tint red when the diff includes removals (deleted text is not in the doc). */
-function ProposalScopeEdgeBars(props: {
-  segments: SectionGutterSeg[];
-  zIndex: number;
-  hasDeletes?: boolean;
-}) {
-  const line = props.hasDeletes ? PROPOSAL_SCOPE_LINE_WITH_DELETES : PROPOSAL_SCOPE_LINE;
-  return (
-    <>
-      {props.segments.map((seg, idx) => (
-        <Box
-          key={idx}
-          position="absolute"
-          left={`${seg.left}px`}
-          top={`${seg.top}px`}
-          w={`${SECTION_GUTTER_LINE_PX}px`}
-          h={`${seg.height}px`}
-          background={line}
-          pointerEvents="none"
-          zIndex={props.zIndex}
-          borderRadius="1px"
-        />
-      ))}
-    </>
-  );
-}
-
-/** How long to wait after typing before syncing markdown + outline to React app state (avoids whole-app re-renders per keystroke). */
+/** How long to wait after typing before syncing markdown to React app state (avoids whole-app re-renders per keystroke). */
 const MARKDOWN_PARENT_DEBOUNCE_MS = 220;
+
+/** Outline / `sections` in App can trail `doc` slightly — fewer outline parses while typing. */
+const OUTLINE_SECTIONS_DEBOUNCE_MS = 480;
 
 /**
  * Parsing block starts + section map for gutter / pinned band uses O(n) markdown prefix serialization.
@@ -475,20 +505,69 @@ const MARKDOWN_PARENT_DEBOUNCE_MS = 220;
  */
 const EDITOR_LAYOUT_DEBOUNCE_MS = 100;
 
+/** When culling gutter marks, keep this margin above/below the scroll viewport (px). */
+const GUTTER_VIEWPORT_MARGIN_PX = 120;
+
 /**
- * Prefer plain text for paste; fall back to stripping HTML so Slate never ingests raw web markup
- * (which becomes stray tags / broken structure in the document).
+ * Fallback: exact prefix lengths via repeated serialize (O(n) growing prefixes).
+ * Used when the fast pairwise block-boundary heuristic fails (lists / nested context).
  */
-function clipboardPlainTextForPaste(dt: DataTransfer): string {
-  const plain = dt.getData("text/plain");
-  if (plain) return plain;
-  const html = dt.getData("text/html");
-  if (!html?.trim()) return "";
-  const el = document.createElement("div");
-  el.innerHTML = html;
-  return el.textContent ?? el.innerText ?? "";
+function computeMarkdownBlockStartsPrefixLoop(
+  api: { markdown: { serialize: (o: { value: Value }) => string } },
+  children: Value,
+): number[] {
+  const n = children.length;
+  const starts = new Array<number>(n + 1);
+  starts[0] = 0;
+  for (let i = 0; i < n; i++) {
+    try {
+      starts[i + 1] = api.markdown.serialize({
+        value: children.slice(0, i + 1) as Value,
+      }).length;
+    } catch {
+      starts[i + 1] = starts[i]!;
+    }
+  }
+  return starts;
 }
 
+/**
+ * O(n) small serializes: cumulative markdown length per top-level block boundary matches
+ * `serialize([prev, curr]) - serialize([prev])` when join rules depend only on adjacent blocks.
+ * Validated against full `md` length and one midpoint prefix; falls back to the exact loop if not.
+ */
+function computeMarkdownBlockStartsForChildren(
+  api: { markdown: { serialize: (o: { value: Value }) => string } },
+  children: Value,
+  md: string,
+): number[] {
+  const n = children.length;
+  if (n === 0) {
+    return [0];
+  }
+  try {
+    const starts = new Array<number>(n + 1);
+    starts[0] = 0;
+    const firstLen = api.markdown.serialize({ value: [children[0]!] as Value }).length;
+    starts[1] = firstLen;
+    for (let i = 1; i < n; i++) {
+      const pair = api.markdown.serialize({ value: [children[i - 1]!, children[i]!] as Value });
+      const prevOne = api.markdown.serialize({ value: [children[i - 1]!] as Value });
+      starts[i + 1] = starts[i]! + (pair.length - prevOne.length);
+    }
+    if (starts[n] !== md.length) {
+      return computeMarkdownBlockStartsPrefixLoop(api, children);
+    }
+    const mid = Math.floor(n / 2);
+    const checkLen = api.markdown.serialize({ value: children.slice(0, mid + 1) as Value }).length;
+    if (checkLen !== starts[mid + 1]) {
+      return computeMarkdownBlockStartsPrefixLoop(api, children);
+    }
+    return starts;
+  } catch {
+    return computeMarkdownBlockStartsPrefixLoop(api, children);
+  }
+}
 
 export type PlateEditorHandle = {
   getEditor: () => ReturnType<typeof usePlateEditor> | null;
@@ -499,6 +578,8 @@ export type PlateEditorHandle = {
   getCursorMarkdownSection: () => { from: number; title: string } | null;
   /** Move caret to the start of the section that begins at this markdown offset and scroll it into view. */
   focusSectionAtMarkdownFrom: (markdownFrom: number) => void;
+  /** Scroll the block range covering [markdownFrom, markdownTo) into view (markdown offsets). */
+  scrollMarkdownRangeIntoView: (markdownFrom: number, markdownTo: number) => void;
   /** Recompute outline sections (bold paragraphs + markdown) and notify App. */
   syncOutlineSections: () => void;
   /** Same section list as the outline sidebar (ATX + manual + bold-only implicit headings). */
@@ -517,13 +598,45 @@ function sectionToRef(s: DocSection): SectionRef {
   };
 }
 
+/** Distance from viewport Y to a closed vertical interval [top, bottom]. */
+function distanceYToBlockSpan(clientY: number, top: number, bottom: number): number {
+  if (clientY < top) return top - clientY;
+  if (clientY > bottom) return clientY - bottom;
+  return 0;
+}
+
+/**
+ * Which top-level block row the sparkle click belongs to — by viewport Y only (sparkle sits in the margin,
+ * so {@link editor.api.findEventRange} can hit the wrong block / sticky-hover can freeze the previous section).
+ * Matches the outline’s notion of “section at this vertical position” better than frozen hover blocks.
+ */
+function topLevelBlockIndexAtClientY(
+  editor: { api: { toDOMNode: (n: unknown) => HTMLElement | null } },
+  children: Value,
+  clientY: number,
+): number {
+  let bestIdx = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < children.length; i++) {
+    const dom = editor.api.toDOMNode(children[i] as unknown);
+    if (!dom) continue;
+    const br = dom.getBoundingClientRect();
+    const d = distanceYToBlockSpan(clientY, br.top, br.bottom);
+    if (d === 0) return i;
+    if (d < bestDist) {
+      bestDist = d;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
 type Props = {
   initialMarkdown: string;
   /** When true, only the outer “desk” around the page uses a dark tint; the page stays light. */
   isDark: boolean;
   onMarkdownChange: (md: string) => void;
   onReady?: () => void;
-  sections: DocSection[];
   onAddSectionToAgent: (ref: SectionRef) => void;
   onAddSelectionToAgent: (ref: SectionRef) => void;
   /** When true, hovering the editor shows the current section outline and + to add to agent. */
@@ -542,9 +655,10 @@ type Props = {
    */
   outlineBootGeneration?: number;
   /**
-   * Cursor-style inline diff: highlight changed blocks + floating Keep/Undo (same as agent chat).
-   * sectionFrom/sectionTo are the markdown offsets of the changed region (from the live sections list).
-   * When both are -1 it means the whole document.
+   * AI edit UI: toolbar (Receiving / Keep / Revert) and fallback green gutter when there is no
+   * {@link lastAssistantMarkdownRange}. Green gutter is hidden while `state === "streaming"` once
+   * {@link lastAssistantMarkdownRange} is used for pending applied edits.
+   * sectionFrom/sectionTo are markdown offsets; -1 / -1 means whole document.
    */
   proposalInline?: {
     state: "streaming" | "pending";
@@ -552,21 +666,56 @@ type Props = {
     messageId?: string;
     sectionFrom: number;
     sectionTo: number;
-    /** Baseline + draft for character-level red/green inline diff on the sheet */
     oldText?: string;
     newText?: string;
   };
+  /** After Keep / apply: show green gutter on the last changed markdown span until superseded. */
+  lastAssistantMarkdownRange?: { from: number; to: number } | null;
   onProposalAccept?: (messageId: string) => void;
   onProposalRevert?: (messageId: string) => void;
 };
 
-export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEditor(
+function proposalInlinePropsEqual(
+  a: Props["proposalInline"] | undefined,
+  b: Props["proposalInline"] | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.state === b.state &&
+    a.messageId === b.messageId &&
+    a.sectionFrom === b.sectionFrom &&
+    a.sectionTo === b.sectionTo &&
+    a.sectionTitle === b.sectionTitle
+  );
+}
+
+function arePlateEditorPropsEqual(prev: Props, next: Props): boolean {
+  return (
+    prev.initialMarkdown === next.initialMarkdown &&
+    prev.isDark === next.isDark &&
+    prev.onMarkdownChange === next.onMarkdownChange &&
+    prev.onReady === next.onReady &&
+    prev.onAddSectionToAgent === next.onAddSectionToAgent &&
+    prev.onAddSelectionToAgent === next.onAddSelectionToAgent &&
+    prev.sectionHoverHighlight === next.sectionHoverHighlight &&
+    prev.activeSectionMarkdownFrom === next.activeSectionMarkdownFrom &&
+    prev.onOutlineSectionsChange === next.onOutlineSectionsChange &&
+    prev.outlineBootGeneration === next.outlineBootGeneration &&
+    proposalInlinePropsEqual(prev.proposalInline, next.proposalInline) &&
+    prev.lastAssistantMarkdownRange?.from === next.lastAssistantMarkdownRange?.from &&
+    prev.lastAssistantMarkdownRange?.to === next.lastAssistantMarkdownRange?.to &&
+    prev.onProposalAccept === next.onProposalAccept &&
+    prev.onProposalRevert === next.onProposalRevert
+  );
+}
+
+const PlateEditorInner = forwardRef<PlateEditorHandle, Props>(function PlateEditor(
   {
     initialMarkdown,
     isDark,
     onMarkdownChange,
     onReady,
-    sections: _sections,
     onAddSectionToAgent,
     onAddSelectionToAgent,
     sectionHoverHighlight = true,
@@ -574,6 +723,7 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
     onOutlineSectionsChange,
     outlineBootGeneration = 0,
     proposalInline,
+    lastAssistantMarkdownRange = null,
     onProposalAccept,
     onProposalRevert,
   },
@@ -587,7 +737,7 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
   const readyFired = useRef(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const pageRef = useRef<HTMLDivElement | null>(null);
-  const lastContextNativeEventRef = useRef<MouseEvent | null>(null);
+  const lastContextNativeEventRef = useRef<globalThis.MouseEvent | null>(null);
   const hoverRaf = useRef<number | null>(null);
   const gapHoverRaf = useRef<number | null>(null);
   /** True while a pointer is down on the editor scroll area (selection drag, click-hold). */
@@ -621,9 +771,9 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
   const boldHintsRef = useRef<OutlineBoldBlockHint[]>([]);
   /** Browser timers are `number`; avoid `NodeJS.Timeout` from merged typings. */
   const parentSyncTimerRef = useRef<number | null>(null);
+  const outlineSyncTimerRef = useRef<number | null>(null);
   const lastPinnedActiveFromRef = useRef<number | null | undefined>(undefined);
   const lastGutterHoverPinnedSigRef = useRef<string>("");
-  const proposalDecorateRef = useRef<ProposalDecorateSpec>({ enabled: false });
   useEffect(() => {
     hoverRegionRef.current = hoverRegion;
   }, [hoverRegion]);
@@ -634,6 +784,9 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
     interBlockGapHoverRef.current = interBlockGapHover;
   }, [interBlockGapHover]);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
+  const [pasteDialog, setPasteDialog] = useState<{ plain: string; html: string } | null>(null);
+  const pasteDialogRef = useRef<{ plain: string; html: string } | null>(null);
+  pasteDialogRef.current = pasteDialog;
   useEffect(() => {
     if (contextMenuOpen) setInterBlockGapHover(null);
   }, [contextMenuOpen]);
@@ -643,46 +796,17 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
     left: number;
     width: number;
     height: number;
-    gutterSegments: Array<{ top: number; left: number; height: number }>;
-    hasDeletes?: boolean;
+    aiStrip: SimpleGutterStrip;
   } | null>(null);
-  const [proposalDecorateGeneration, setProposalDecorateGeneration] = useState(0);
+  const [lastChangeAiGutterStrip, setLastChangeAiGutterStrip] = useState<SimpleGutterStrip | null>(null);
+  /** Block span where AI gutter replaces section gutters (no double-draw). */
+  const [aiReplaceBlockRange, setAiReplaceBlockRange] = useState<{ b0: number; b1: number } | null>(null);
   const [documentGutterMarks, setDocumentGutterMarks] = useState<SimpleGutterStrip[]>([]);
 
   const editor = usePlateEditor({
     plugins: editorPlugins,
     value: (ed) => ed.getApi(MarkdownPlugin).markdown.deserialize(initialMarkdown),
   });
-
-  const proposalDecorate = useCallback(({ entry }: { editor: PlateEditorApi; entry: NodeEntry }) => {
-    const [node, path] = entry;
-    if (!SlateText.isText(node)) return [];
-    const spec = proposalDecorateRef.current;
-    if (!spec.enabled) return [];
-    const bi = path[0];
-    if (typeof bi !== "number" || bi < spec.b0 || bi > spec.b1) return [];
-    const run = spec.runs.find((r) => Path.equals(r.path, path));
-    if (!run) return [];
-    const { absStart, len } = run;
-    const absEnd = absStart + len;
-    const insBg = "rgba(74, 222, 128, 0.26)";
-    const ranges: {
-      anchor: { path: typeof path; offset: number };
-      focus: { path: typeof path; offset: number };
-      backgroundColor: string;
-    }[] = [];
-    for (const span of spec.insertSpans) {
-      const lo = Math.max(absStart, span.start);
-      const hi = Math.min(absEnd, span.end);
-      if (hi <= lo) continue;
-      ranges.push({
-        anchor: { path, offset: lo - absStart },
-        focus: { path, offset: hi - absStart },
-        backgroundColor: insBg,
-      });
-    }
-    return ranges;
-  }, []);
 
   const serializeToMarkdown = useCallback((): string => {
     try {
@@ -699,19 +823,8 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
       const hit = mdBlockStartsCacheRef.current;
       if (hit && hit.md === md) return hit;
 
-      const n = children.length;
-      const starts = new Array<number>(n + 1);
-      starts[0] = 0;
       const api = editor.getApi(MarkdownPlugin);
-      for (let i = 0; i < n; i++) {
-        try {
-          starts[i + 1] = api.markdown.serialize({
-            value: children.slice(0, i + 1) as Value,
-          }).length;
-        } catch {
-          starts[i + 1] = starts[i];
-        }
-      }
+      const starts = computeMarkdownBlockStartsForChildren(api, children, md);
       const next = { md, starts };
       mdBlockStartsCacheRef.current = next;
       return next;
@@ -765,11 +878,13 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
       const { md, starts } = getMarkdownBlockStarts();
       const hints = collectBoldOnlyParagraphHints(children as unknown[], starts);
       boldHintsRef.current = hints;
-      onOutlineSectionsChangeRef.current?.(getSectionsFromTextWithBoldBlockHints(md, hints));
+      if (sectionHoverHighlight) {
+        onOutlineSectionsChangeRef.current?.(getSectionsFromTextWithBoldBlockHints(md, hints));
+      }
     } catch {
       /* ignore */
     }
-  }, [editor, getMarkdownBlockStarts]);
+  }, [editor, getMarkdownBlockStarts, sectionHoverHighlight]);
 
   const syncOutlineSectionsRef = useRef(syncOutlineSections);
   syncOutlineSectionsRef.current = syncOutlineSections;
@@ -778,6 +893,10 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
     if (parentSyncTimerRef.current != null) {
       clearTimeout(parentSyncTimerRef.current);
       parentSyncTimerRef.current = null;
+    }
+    if (outlineSyncTimerRef.current != null) {
+      clearTimeout(outlineSyncTimerRef.current);
+      outlineSyncTimerRef.current = null;
     }
     try {
       const md = editor.getApi(MarkdownPlugin).markdown.serialize({ value: editor.children as Value });
@@ -791,6 +910,7 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
   /**
    * Debounce markdown serialization + parent sync. Important: do not serialize on every `onValueChange`
    * — full-document markdown serialization is expensive and was blocking the input path each keystroke.
+   * Outline sync uses a longer debounce so App `sections` churn less often while typing.
    */
   const scheduleParentMarkdownSync = useCallback(() => {
     if (parentSyncTimerRef.current != null) clearTimeout(parentSyncTimerRef.current);
@@ -799,11 +919,20 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
       try {
         const md = editor.getApi(MarkdownPlugin).markdown.serialize({ value: editor.children as Value });
         onMarkdownChangeRef.current(md);
-        syncOutlineSectionsRef.current();
       } catch {
         /* noop */
       }
     }, MARKDOWN_PARENT_DEBOUNCE_MS);
+
+    if (outlineSyncTimerRef.current != null) clearTimeout(outlineSyncTimerRef.current);
+    outlineSyncTimerRef.current = window.setTimeout(() => {
+      outlineSyncTimerRef.current = null;
+      try {
+        syncOutlineSectionsRef.current();
+      } catch {
+        /* noop */
+      }
+    }, OUTLINE_SECTIONS_DEBOUNCE_MS);
   }, [editor]);
 
   useEffect(() => {
@@ -811,6 +940,10 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
       if (parentSyncTimerRef.current != null) {
         clearTimeout(parentSyncTimerRef.current);
         parentSyncTimerRef.current = null;
+      }
+      if (outlineSyncTimerRef.current != null) {
+        clearTimeout(outlineSyncTimerRef.current);
+        outlineSyncTimerRef.current = null;
       }
       try {
         const md = editor.getApi(MarkdownPlugin).markdown.serialize({ value: editor.children as Value });
@@ -849,7 +982,8 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
         const br = dom.getBoundingClientRect();
         const t = br.top - pr.top;
         const b = br.bottom - pr.top;
-        const l = br.left - pr.left;
+        const l =
+          dom instanceof HTMLElement ? gutterContentLeftPx(dom, pr) : br.left - pr.left;
         const r = br.right - pr.left;
         if (top === null || t < top) top = t;
         if (bottom === null || b > bottom) bottom = b;
@@ -863,42 +997,6 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
         width: Math.max(12, right - left + pad * 2),
         height: Math.max(12, bottom - top + pad * 2),
       };
-    },
-    [editor],
-  );
-
-  /** One vertical bar per top-level block in the range, with gaps between segments. */
-  const layoutGutterSegmentsForBlockRange = useCallback(
-    (b0: number, b1: number, blockPad: number): Array<{ top: number; left: number; height: number }> | null => {
-      const pageEl = pageRef.current;
-      if (!pageEl) return null;
-      const pr = pageEl.getBoundingClientRect();
-      const children = editor.children as Value;
-      let minLeft: number | null = null;
-      const rows: { top: number; bottom: number }[] = [];
-      for (let i = b0; i <= b1 && i < children.length; i++) {
-        const node = children[i];
-        const dom = editor.api.toDOMNode(node as any);
-        if (!dom) continue;
-        const br = dom.getBoundingClientRect();
-        const l = br.left - pr.left;
-        if (minLeft === null || l < minLeft) minLeft = l;
-        rows.push({ top: br.top - pr.top, bottom: br.bottom - pr.top });
-      }
-      if (minLeft === null || rows.length === 0) return null;
-      const barLeft = minLeft - blockPad - SECTION_GUTTER_BAR_OFFSET_LEFT_PX;
-      const gap = SECTION_GUTTER_SEGMENT_GAP_PX;
-      const segments: Array<{ top: number; left: number; height: number }> = [];
-      for (let j = 0; j < rows.length; j++) {
-        const row = rows[j]!;
-        const trimTop = j > 0 ? gap / 2 : 0;
-        const trimBot = j < rows.length - 1 ? gap / 2 : 0;
-        const rawTop = row.top - blockPad + trimTop;
-        const rawBottom = row.bottom + blockPad - trimBot;
-        const { top, height } = insetGutterBarVertically(rawTop, rawBottom, 6);
-        segments.push({ top, left: barLeft, height });
-      }
-      return segments;
     },
     [editor],
   );
@@ -960,12 +1058,17 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
   ]);
 
   useLayoutEffect(() => {
-    const bumpDecorations = () => setProposalDecorateGeneration((n) => n + 1);
-
     if (!proposalInline) {
-      proposalDecorateRef.current = { enabled: false };
       setProposalLayout(null);
-      bumpDecorations();
+      return;
+    }
+    if (proposalInline.state === "streaming") {
+      setProposalLayout(null);
+      setAiReplaceBlockRange(null);
+      return;
+    }
+    if (proposalInline.state === "pending" && lastAssistantMarkdownRange) {
+      setProposalLayout(null);
       return;
     }
     try {
@@ -977,16 +1080,14 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
       const from = sectionFrom === -1 ? 0 : sectionFrom;
       const to = sectionTo === -1 ? (starts[starts.length - 1] ?? 0) : sectionTo;
       if (to <= from) {
-        proposalDecorateRef.current = { enabled: false };
         setProposalLayout(null);
-        bumpDecorations();
+        setAiReplaceBlockRange(null);
         return;
       }
       const span = topLevelBlocksIntersectingMarkdownRange(starts, from, to);
       if (!span) {
-        proposalDecorateRef.current = { enabled: false };
         setProposalLayout(null);
-        bumpDecorations();
+        setAiReplaceBlockRange(null);
         return;
       }
       let [b0, b1] = span;
@@ -1005,65 +1106,115 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
       }
       const reg = layoutRegionForBlockRange(b0, b1, 4);
       if (!reg) {
-        proposalDecorateRef.current = { enabled: false };
         setProposalLayout(null);
-        bumpDecorations();
+        setAiReplaceBlockRange(null);
         return;
       }
-      const fallbackBar = (() => {
-        const left = reg.left - SECTION_GUTTER_BAR_OFFSET_LEFT_PX;
-        const { top, height } = insetGutterBarVertically(reg.top, reg.top + reg.height);
-        return [{ top, left, height }];
-      })();
-      const gutterSegments = layoutGutterSegmentsForBlockRange(b0, b1, 4) ?? fallbackBar;
-
-      const oldT = proposalInline.oldText ?? "";
-      const newT = proposalInline.newText ?? "";
-      const parts = computeDiffParts(oldT, newT);
-      const hasDeletes = parts.some((p) => p.op === -1);
-      let insertSpans = newSideInsertSpansFromDiffParts(parts);
-      const ed = editor as unknown as SlateEditor;
-      const { runs, fullLen } = collectTextRunsInBlockRange(ed, b0, b1);
-      const rangeAnchor = Editor.start(ed, [b0]);
-      const rangeFocus = Editor.end(ed, [b1]);
-      const regionStr = Editor.string(ed, { anchor: rangeAnchor, focus: rangeFocus });
-      const normNew = normalizeAssistantMarkdownParagraphs(newT);
-      if (
-        fullLen > 0 &&
-        normNew.length > 0 &&
-        regionStr !== normNew &&
-        !regionStr.startsWith(normNew.slice(0, Math.min(48, normNew.length)))
-      ) {
-        insertSpans = [{ start: 0, end: fullLen }];
-      } else if (fullLen > 0 && insertSpans.length === 0) {
-        insertSpans = [{ start: 0, end: fullLen }];
+      const pageEl = pageRef.current;
+      if (!pageEl) {
+        setProposalLayout(null);
+        setAiReplaceBlockRange(null);
+        return;
       }
-
-      proposalDecorateRef.current =
-        runs.length === 0
-          ? { enabled: false }
-          : {
-              enabled: true,
-              b0,
-              b1,
-              runs,
-              insertSpans,
-            };
-      setProposalLayout({ ...reg, gutterSegments, hasDeletes });
-      bumpDecorations();
+      const pr = pageEl.getBoundingClientRect();
+      const aiStrip = layoutDotLineDotGutterStrip({
+        editor: editor as { api: { toDOMNode: (n: unknown) => HTMLElement | null } },
+        pr,
+        children,
+        b0,
+        b1,
+        key: "proposal-ai-gutter",
+        accent: "ai",
+      });
+      if (!aiStrip) {
+        setProposalLayout(null);
+        setAiReplaceBlockRange(null);
+        return;
+      }
+      setProposalLayout({ ...reg, aiStrip });
+      setAiReplaceBlockRange({ b0, b1 });
     } catch {
-      proposalDecorateRef.current = { enabled: false };
       setProposalLayout(null);
-      setProposalDecorateGeneration((n) => n + 1);
+      setAiReplaceBlockRange(null);
     }
   }, [
     proposalInline,
+    lastAssistantMarkdownRange,
     editor,
     editor.children,
     getMarkdownBlockStarts,
     layoutRegionForBlockRange,
-    layoutGutterSegmentsForBlockRange,
   ]);
+
+  useLayoutEffect(() => {
+    if (!lastAssistantMarkdownRange) {
+      setLastChangeAiGutterStrip(null);
+      if (!proposalInline) setAiReplaceBlockRange(null);
+      return;
+    }
+    if (proposalInline?.state === "streaming") {
+      setLastChangeAiGutterStrip(null);
+      return;
+    }
+    try {
+      const { from, to } = lastAssistantMarkdownRange;
+      if (to <= from) {
+        setLastChangeAiGutterStrip(null);
+        setAiReplaceBlockRange(null);
+        return;
+      }
+      const children = editor.children as Value;
+      const { md, starts } = getMarkdownBlockStarts();
+      const hints = collectBoldOnlyParagraphHints(children as unknown[], starts);
+      const docSections = getSectionsFromTextWithBoldBlockHints(md, hints);
+      const span = topLevelBlocksIntersectingMarkdownRange(starts, from, to);
+      if (!span) {
+        setLastChangeAiGutterStrip(null);
+        setAiReplaceBlockRange(null);
+        return;
+      }
+      let [b0, b1] = span;
+      const sec =
+        docSections.find((s) => s.level > 0 && from >= s.from && from < s.to) ??
+        docSections.find((s) => s.level > 0 && Math.abs(s.from - from) <= 8);
+      if (sec) {
+        [b0, b1] = trimBlockSpanToSection(
+          b0,
+          b1,
+          children as Array<{ type?: string }>,
+          starts,
+          sec,
+          docSections,
+        );
+      }
+      const pageEl = pageRef.current;
+      if (!pageEl) {
+        setLastChangeAiGutterStrip(null);
+        setAiReplaceBlockRange(null);
+        return;
+      }
+      const pr = pageEl.getBoundingClientRect();
+      const strip = layoutDotLineDotGutterStrip({
+        editor: editor as { api: { toDOMNode: (n: unknown) => HTMLElement | null } },
+        pr,
+        children,
+        b0,
+        b1,
+        key: "last-change-ai-gutter",
+        accent: "ai",
+      });
+      if (!strip) {
+        setLastChangeAiGutterStrip(null);
+        setAiReplaceBlockRange(null);
+        return;
+      }
+      setLastChangeAiGutterStrip(strip);
+      setAiReplaceBlockRange({ b0, b1 });
+    } catch {
+      setLastChangeAiGutterStrip(null);
+      setAiReplaceBlockRange(null);
+    }
+  }, [proposalInline, lastAssistantMarkdownRange, editor, editor.children, getMarkdownBlockStarts]);
 
   useEffect(() => {
     if (!proposalInline || proposalInline.state !== "pending" || !proposalInline.messageId) return;
@@ -1120,6 +1271,9 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
               docSections,
               hoverBlocks: hoverSectionBlocks,
               pinnedBlocks: pinnedSectionBlocks,
+              scrollRoot: wrapRef.current,
+              viewportMarginPx: GUTTER_VIEWPORT_MARGIN_PX,
+              aiReplaceBlockRange,
             }),
           );
         } catch {
@@ -1139,6 +1293,7 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
     getMarkdownBlockStarts,
     hoverSectionBlocks,
     pinnedSectionBlocks,
+    aiReplaceBlockRange,
   ]);
 
   useImperativeHandle(
@@ -1149,6 +1304,10 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
         if (parentSyncTimerRef.current != null) {
           clearTimeout(parentSyncTimerRef.current);
           parentSyncTimerRef.current = null;
+        }
+        if (outlineSyncTimerRef.current != null) {
+          clearTimeout(outlineSyncTimerRef.current);
+          outlineSyncTimerRef.current = null;
         }
         const nodes = editor.getApi(MarkdownPlugin).markdown.deserialize(md);
         editor.tf.reset();
@@ -1232,6 +1391,39 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
           editor.tf.select({ anchor: startPoint, focus: startPoint });
           editor.tf.focus();
           const node = children[b0];
+          const dom = editor.api.toDOMNode(node as any);
+          dom?.scrollIntoView({ behavior: "smooth", block: "center" });
+        } catch {
+          /* ignore */
+        }
+      },
+      scrollMarkdownRangeIntoView: (markdownFrom: number, markdownTo: number) => {
+        try {
+          const children = editor.children as Value;
+          const { md, starts } = getMarkdownBlockStarts();
+          const hints = collectBoldOnlyParagraphHints(children as unknown[], starts);
+          boldHintsRef.current = hints;
+          const docSections = getSectionsFromTextWithBoldBlockHints(md, hints);
+          const from = Math.max(0, markdownFrom);
+          const to = Math.max(from, markdownTo);
+          const span = topLevelBlocksIntersectingMarkdownRange(starts, from, to);
+          if (!span) return;
+          const sec =
+            docSections.find((s) => s.level > 0 && from >= s.from && from < s.to) ??
+            docSections.find((s) => s.level > 0 && Math.abs(s.from - from) <= 8);
+          let [b0, b1] = span;
+          if (sec) {
+            [b0, b1] = trimBlockSpanToSection(
+              b0,
+              b1,
+              children as Array<{ type?: string }>,
+              starts,
+              sec,
+              docSections,
+            );
+          }
+          const mid = Math.floor((b0 + b1) / 2);
+          const node = children[mid];
           const dom = editor.api.toDOMNode(node as any);
           dom?.scrollIntoView({ behavior: "smooth", block: "center" });
         } catch {
@@ -1652,6 +1844,110 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
     return { text: fragMd, from, to: from + fragMd.length };
   }, [editor, getMarkdownBlockStarts, serializeToMarkdown]);
 
+  const insertDeserializedMarkdown = useCallback(
+    (text: string) => {
+      if (!text) return;
+      try {
+        const nodes = editor.getApi(MarkdownPlugin).markdown.deserialize(text);
+        editor.tf.insertFragment(nodes);
+      } catch {
+        Transforms.insertText(editor as unknown as SlateEditor, text);
+      }
+    },
+    [editor],
+  );
+
+  const applyPasteSnapshotPlain = useCallback(
+    (snapshot: ClipboardTextSnapshot) => {
+      const plain = snapshot.plain.trim()
+        ? snapshot.plain
+        : htmlToPlainText(snapshot.html ?? "");
+      if (plain) insertDeserializedMarkdown(plain);
+    },
+    [insertDeserializedMarkdown],
+  );
+
+  const runRichPasteWithPolicy = useCallback(
+    async (snapshot: ClipboardTextSnapshot) => {
+      const api = window.markAPI;
+      const raw = api ? await api.getStore("pasteDefaultRichHandling") : undefined;
+      const policy = parsePasteDefaultRichHandling(raw);
+      if (policy === "ask") {
+        setPasteDialog({
+          plain: snapshot.plain,
+          html: snapshot.html ?? "",
+        });
+        return;
+      }
+      if (policy === "plain") {
+        applyPasteSnapshotPlain(snapshot);
+        return;
+      }
+      const conv = htmlToGfmMarkdown(snapshot.html ?? "", snapshot.plain);
+      if (!conv.ok) {
+        toaster.create({
+          type: "info",
+          title: "Formatting not converted",
+          description: conv.reason,
+        });
+      }
+      insertDeserializedMarkdown(conv.markdown);
+    },
+    [applyPasteSnapshotPlain, insertDeserializedMarkdown],
+  );
+
+  const processClipboardSnapshot = useCallback(
+    (snapshot: ClipboardTextSnapshot) => {
+      const classification = classifyClipboardRichness(snapshot);
+      if (classification === "oversized") {
+        toaster.create({
+          type: "warning",
+          title: "Clipboard too large",
+          description: "HTML was too large; pasted as plain text only.",
+        });
+        applyPasteSnapshotPlain(snapshot);
+        return;
+      }
+      if (classification === "plain") {
+        applyPasteSnapshotPlain(snapshot);
+        return;
+      }
+      void runRichPasteWithPolicy(snapshot);
+    },
+    [applyPasteSnapshotPlain, runRichPasteWithPolicy],
+  );
+
+  const handlePasteFormatChoose = useCallback(
+    (choice: PasteFormattingChoice, remember: boolean) => {
+      const snap = pasteDialogRef.current;
+      setPasteDialog(null);
+      if (!snap) return;
+      void (async () => {
+        if (remember && window.markAPI) {
+          await window.markAPI.setStore(
+            "pasteDefaultRichHandling",
+            choice === "markdown" ? "markdown" : "plain",
+          );
+        }
+        if (choice === "plain") {
+          const plain = snap.plain.trim() ? snap.plain : htmlToPlainText(snap.html);
+          insertDeserializedMarkdown(plain);
+        } else {
+          const conv = htmlToGfmMarkdown(snap.html, snap.plain);
+          if (!conv.ok) {
+            toaster.create({
+              type: "info",
+              title: "Formatting not converted",
+              description: conv.reason,
+            });
+          }
+          insertDeserializedMarkdown(conv.markdown);
+        }
+      })();
+    },
+    [insertDeserializedMarkdown],
+  );
+
   const runCopy = useCallback(async () => {
     const md = getSelectionMarkdown();
     if (md != null && md.length > 0) await navigator.clipboard.writeText(md);
@@ -1683,16 +1979,10 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
     } catch {
       /* fall through to text */
     }
-    let text = "";
-    try {
-      text = await navigator.clipboard.readText();
-    } catch {
-      return;
-    }
-    if (!text) return;
-    const nodes = editor.getApi(MarkdownPlugin).markdown.deserialize(text);
-    editor.tf.insertFragment(nodes);
-  }, [editor]);
+    const snapshot = await readClipboardSnapshotAsync();
+    if (!snapshot.plain.trim() && !snapshot.html?.trim()) return;
+    processClipboardSnapshot(snapshot);
+  }, [editor, processClipboardSnapshot]);
 
   const runSelectAll = useCallback(() => {
     editor.tf.focus();
@@ -1716,11 +2006,26 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
     return liveSectionFromBlockRange(b0, b1);
   }, [editor, liveSectionFromBlockRange, resolveSectionBlockRange]);
 
+  /** Section for the current selection/caret — preferred over context-menu coordinates when they disagree. */
+  const docSectionFromCaretsSelection = useCallback((): DocSection | null => {
+    const sel = editor.selection;
+    if (!sel) return null;
+    const block = editor.api.block({ at: sel, highest: true });
+    if (!block) return null;
+    const blockIndex = block[1][0]!;
+    const [b0, b1] = resolveSectionBlockRange(blockIndex);
+    return liveSectionFromBlockRange(b0, b1);
+  }, [editor, liveSectionFromBlockRange, resolveSectionBlockRange]);
+
   const runAddSection = useCallback(() => {
-    const sec = sectionAtContext();
+    const fromCtx = sectionAtContext();
+    const fromCaret = docSectionFromCaretsSelection();
+    let sec: DocSection | null = null;
+    if (fromCaret && fromCtx && fromCaret.id !== fromCtx.id) sec = fromCaret;
+    else sec = fromCtx ?? fromCaret;
     if (!sec) return;
     onAddSectionToAgent(sectionToRef(sec));
-  }, [onAddSectionToAgent, sectionAtContext]);
+  }, [docSectionFromCaretsSelection, onAddSectionToAgent, sectionAtContext]);
 
   const runAddSelection = useCallback(() => {
     const span = getSelectionMarkdownSpan();
@@ -1734,26 +2039,56 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
     });
   }, [getSelectionMarkdownSpan, onAddSelectionToAgent]);
 
-  const runAddHoveredSection = useCallback(() => {
-    if (!sectionHoverHighlight) return;
-    const showHover =
-      mouseInEditorChrome && hoverSectionBlocks !== null;
-    const hb = showHover ? hoverSectionBlocks : pinnedSectionBlocks;
-    if (!hb) return;
-    const sec = liveSectionFromBlockRange(hb.b0, hb.b1);
-    if (!sec) return;
-    onAddSectionToAgent(sectionToRef(sec));
-  }, [
-    hoverSectionBlocks,
-    liveSectionFromBlockRange,
-    mouseInEditorChrome,
-    onAddSectionToAgent,
-    pinnedSectionBlocks,
-    sectionHoverHighlight,
-  ]);
+  /** Same section identity as outline rows: {@link findDocSectionForOutlineMarkdownFrom} on block start offset. */
+  const sectionRefAlignedToOutline = useCallback(
+    (b0: number): SectionRef | null => {
+      try {
+        const children = editor.children as Value;
+        const { md, starts } = getMarkdownBlockStarts();
+        const hints = collectBoldOnlyParagraphHints(children as unknown[], starts);
+        const docSections = getSectionsFromTextWithBoldBlockHints(md, hints);
+        const anchor = starts[b0] ?? 0;
+        const sec = findDocSectionForOutlineMarkdownFrom(docSections, anchor);
+        if (!sec || sec.level <= 0) return null;
+        return sectionToRef(sec);
+      } catch {
+        return null;
+      }
+    },
+    [editor, getMarkdownBlockStarts],
+  );
+
+  const runAddHoveredSection = useCallback(
+    (e: ReactMouseEvent) => {
+      if (!sectionHoverHighlight) return;
+      const children = editor.children as Value;
+      const blockIdx = topLevelBlockIndexAtClientY(
+        editor as { api: { toDOMNode: (n: unknown) => HTMLElement | null } },
+        children,
+        e.clientY,
+      );
+      const [b0, b1] = resolveSectionBlockRange(blockIdx);
+      const aligned = sectionRefAlignedToOutline(b0);
+      if (aligned) {
+        onAddSectionToAgent(aligned);
+        return;
+      }
+      const sec = liveSectionFromBlockRange(b0, b1);
+      if (!sec) return;
+      onAddSectionToAgent(sectionToRef(sec));
+    },
+    [
+      sectionHoverHighlight,
+      editor,
+      resolveSectionBlockRange,
+      sectionRefAlignedToOutline,
+      liveSectionFromBlockRange,
+      onAddSectionToAgent,
+    ],
+  );
 
   const handleEditorPaste = useCallback(
-    (e: React.ClipboardEvent) => {
+    (e: ClipboardEvent) => {
       const dt = e.clipboardData;
       if (!dt) return;
       const fromFiles =
@@ -1775,22 +2110,22 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
         insertImageFromFiles(editor, xfer.files);
         return;
       }
-      const text = clipboardPlainTextForPaste(dt);
-      if (!text) return;
+      const snapshot = snapshotFromDataTransfer(dt);
+      if (!snapshot.plain.trim() && !snapshot.html?.trim()) return;
       e.preventDefault();
-      try {
-        const nodes = editor.getApi(MarkdownPlugin).markdown.deserialize(text);
-        editor.tf.insertFragment(nodes);
-      } catch {
-        Transforms.insertText(editor as unknown as SlateEditor, text);
-      }
+      processClipboardSnapshot(snapshot);
     },
-    [editor],
+    [editor, processClipboardSnapshot],
   );
 
   return (
-    <Plate editor={editor} onValueChange={handleChange}>
-      <BumpPlateDecorations generation={proposalDecorateGeneration} />
+    <>
+      <PasteFormattingDialog
+        open={pasteDialog !== null}
+        onChoose={handlePasteFormatChoose}
+        onCancel={() => setPasteDialog(null)}
+      />
+      <Plate editor={editor} onValueChange={handleChange}>
       <Menu.Root
         onOpenChange={(d: { open: boolean }) => {
           setContextMenuOpen(d.open);
@@ -1852,18 +2187,25 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
               style={{ zoom: editorZoom }}
             >
               {proposalInline && proposalLayout ? (
-                <ProposalScopeEdgeBars
-                  segments={proposalLayout.gutterSegments}
-                  zIndex={4}
-                  hasDeletes={proposalLayout.hasDeletes}
+                <SimpleGutterStripView strip={proposalLayout.aiStrip} zIndex={4} />
+              ) : null}
+              {lastChangeAiGutterStrip &&
+              (!proposalInline || proposalInline.state === "pending") ? (
+                <SimpleGutterStripView
+                  strip={lastChangeAiGutterStrip}
+                  zIndex={proposalInline?.state === "pending" ? 4 : 3}
                 />
               ) : null}
               {proposalInline && (proposalInline.state === "streaming" || proposalInline.messageId) ? (
                 <Flex
-                  position="absolute"
+                  position="sticky"
                   top={{ base: "10px", md: "14px" }}
-                  right={{ base: "14px", md: "20px" }}
                   zIndex={5}
+                  w="fit-content"
+                  maxW="100%"
+                  ml="auto"
+                  mr={{ base: "14px", md: "20px" }}
+                  flexShrink={0}
                   align="center"
                   gap={0}
                   borderRadius="md"
@@ -2008,7 +2350,7 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
                           onMouseDown={(ev) => ev.preventDefault()}
                           onClick={(ev) => {
                             ev.stopPropagation();
-                            runAddHoveredSection();
+                            runAddHoveredSection(ev);
                           }}
                         >
                           <Sparkles
@@ -2040,7 +2382,7 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
                           onMouseDown={(ev) => ev.preventDefault()}
                           onClick={(ev) => {
                             ev.stopPropagation();
-                            runAddHoveredSection();
+                            runAddHoveredSection(ev);
                           }}
                         >
                           <Sparkles
@@ -2060,8 +2402,8 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
               <PlateContent
                 className="markapp-plate-content markapp-light"
                 placeholder="Start writing..."
-                decorate={proposalDecorate}
                 onPaste={handleEditorPaste}
+                onBlur={flushMarkdownToParent}
                 style={{
                   minHeight: "min(70vh, 900px)",
                   outline: "none",
@@ -2101,5 +2443,10 @@ export const PlateEditor = forwardRef<PlateEditorHandle, Props>(function PlateEd
         </Portal>
       </Menu.Root>
     </Plate>
+    </>
   );
 });
+
+PlateEditorInner.displayName = "PlateEditor";
+
+export const PlateEditor = memo(PlateEditorInner, arePlateEditorPropsEqual);

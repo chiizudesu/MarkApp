@@ -1,0 +1,27 @@
+---
+description: Agent mode applies edits or generates content with summary; Ask mode is chat-only
+alwaysApply: true
+---
+
+# Agent vs Ask mode
+
+## Agent mode (implementation)
+
+Use Agent mode whenever the user wants changes, fixes, features, refactors, or runnable output in the repo.
+
+In Agent mode you must **not** stop at a chat-only reply that tells the user what to do. Instead:
+
+- **Apply edits** in the workspace and end with a **brief summary** of what changed; or
+- **Generate content** (new files, full snippets meant to be saved) and provide a **brief summary** of what was produced.
+
+Long sessions (e.g. with fast models) must still follow this: prefer tool use and concrete artifacts over prose instructions.
+
+## Ask mode (read-only / explanation)
+
+Ask mode is when the user is exploring, reviewing, or explicitly wants **no** workspace changes.
+
+In Ask mode, replying in chat only is correct; do not apply edits unless the user switches to Agent mode or clearly asks you to implement.
+
+## Resolving ambiguity
+
+If the user’s message could be either “do it” or “explain how,” default to **Agent mode** for this project: make the change and summarize, unless they clearly asked for explanation only.

@@ -48,10 +48,6 @@ export function TemplateManager(props: { open: boolean; onClose: () => void }) {
   };
 
   const del = async (it: Item) => {
-    if (it.source === "bundled") {
-      alert("Cannot delete bundled templates.");
-      return;
-    }
     if (!confirm(`Delete ${it.name}?`)) return;
     const api = window.markAPI;
     if (!api) return;
@@ -76,7 +72,7 @@ export function TemplateManager(props: { open: boolean; onClose: () => void }) {
             <Box p={4} borderBottomWidth="1px" borderColor={{ _light: "gray.200", _dark: "gray.600" }}>
               <Text fontWeight="bold">Template manager</Text>
               <Text fontSize="xs" color="fg.muted" mt={1}>
-                User templates save under your app data folder. Bundled templates are read-only.
+                Lists templates in your app data folder and the optional extra folder from Settings → Files.
               </Text>
             </Box>
             <VStack align="stretch" p={4} gap={3} overflowY="auto" maxH="65vh">
@@ -96,11 +92,9 @@ export function TemplateManager(props: { open: boolean; onClose: () => void }) {
                       ({it.source})
                     </Text>
                   </Text>
-                  {it.source !== "bundled" && (
-                    <IconButton aria-label="Delete" size="sm" variant="ghost" colorPalette="red" onClick={() => void del(it)}>
-                      <Trash2 size={14} />
-                    </IconButton>
-                  )}
+                  <IconButton aria-label="Delete" size="sm" variant="ghost" colorPalette="red" onClick={() => void del(it)}>
+                    <Trash2 size={14} />
+                  </IconButton>
                 </HStack>
               ))}
               <Text fontWeight="semibold" fontSize="sm">

@@ -1,11 +1,16 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import { Box, IconButton, Text, VStack, HStack } from "@chakra-ui/react";
 import { Plus, ChevronDown, ChevronRight } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { OutlineNode } from "@/services/sectionService";
 
-function OutlineTitle({ markdown }: { markdown: string }) {
+/** Inline markdown in a heading title is rare; avoid react-markdown per row when plain text. */
+function outlineTitleLooksPlain(s: string): boolean {
+  return !/[*_`[\]\\]/.test(s);
+}
+
+const OutlineTitleMarkdown = memo(function OutlineTitleMarkdown({ markdown }: { markdown: string }) {
   return (
     <Box
       as="span"
@@ -30,32 +35,20 @@ function OutlineTitle({ markdown }: { markdown: string }) {
       </ReactMarkdown>
     </Box>
   );
+});
+
+function OutlineTitle({ title }: { title: string }) {
+  if (outlineTitleLooksPlain(title)) {
+    return (
+      <Box as="span" fontSize="inherit" lineHeight="short">
+        {title}
+      </Box>
+    );
+  }
+  return <OutlineTitleMarkdown markdown={title} />;
 }
 
-function OutlineItems(props: {
-  nodes: OutlineNode[];
-  depth: number;
-  activeSectionId: string | null;
-  onPick: (node: OutlineNode) => void;
-  onAddToChat: (node: OutlineNode) => void;
-}) {
-  return (
-    <>
-      {props.nodes.map((n) => (
-        <HStackRow
-          key={n.id}
-          title={n.title}
-          depth={0}
-          active={props.activeSectionId !== null && props.activeSectionId === n.id}
-          onPick={() => props.onPick(n)}
-          onAddToChat={() => props.onAddToChat(n)}
-        />
-      ))}
-    </>
-  );
-}
-
-function HStackRow(props: {
+const HStackRow = memo(function HStackRow(props: {
   title: string;
   depth: number;
   active: boolean;
@@ -84,7 +77,7 @@ function HStackRow(props: {
       _hover={{ bg: { _light: "blackAlpha.50", _dark: "whiteAlpha.50" } }}
     >
       <Text fontSize="xs" truncate flex="1" title={props.title} lineHeight="short">
-        <OutlineTitle markdown={props.title} />
+        <OutlineTitle title={props.title} />
       </Text>
       <IconButton
         aria-label={`Add “${props.title}” to chat context`}
@@ -104,9 +97,32 @@ function HStackRow(props: {
       </IconButton>
     </Box>
   );
+});
+
+function OutlineItems(props: {
+  nodes: OutlineNode[];
+  depth: number;
+  activeSectionId: string | null;
+  onPick: (node: OutlineNode) => void;
+  onAddToChat: (node: OutlineNode) => void;
+}) {
+  return (
+    <>
+      {props.nodes.map((n) => (
+        <HStackRow
+          key={n.id}
+          title={n.title}
+          depth={0}
+          active={props.activeSectionId !== null && props.activeSectionId === n.id}
+          onPick={() => props.onPick(n)}
+          onAddToChat={() => props.onAddToChat(n)}
+        />
+      ))}
+    </>
+  );
 }
 
-export function DocumentOutline(props: {
+export const DocumentOutline = memo(function DocumentOutline(props: {
   tree: OutlineNode[];
   activeSectionId: string | null;
   onPick: (node: OutlineNode) => void;
@@ -187,4 +203,4 @@ export function DocumentOutline(props: {
       ) : null}
     </VStack>
   );
-}
+});

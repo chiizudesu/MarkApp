@@ -196,6 +196,23 @@ type FmtState = {
   textAlign?: Alignment;
 };
 
+function fmtStateEqual(a: FmtState, b: FmtState): boolean {
+  return (
+    a.bold === b.bold &&
+    a.italic === b.italic &&
+    a.underline === b.underline &&
+    a.strikethrough === b.strikethrough &&
+    a.code === b.code &&
+    a.block === b.block &&
+    a.bulletList === b.bulletList &&
+    a.numberedList === b.numberedList &&
+    a.fontColor === b.fontColor &&
+    a.fontFamily === b.fontFamily &&
+    a.fontSize === b.fontSize &&
+    a.textAlign === b.textAlign
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Menu item section label (non-interactive divider label)
 // ---------------------------------------------------------------------------
@@ -286,7 +303,7 @@ export function EditorToolbar({
         fontSize: (marks["fontSize"] as string) ?? "",
         textAlign: blockAlign,
       };
-      setFmt(nextFmt);
+      setFmt((prev) => (fmtStateEqual(prev, nextFmt) ? prev : nextFmt));
     } catch {
       /* selection / api edge cases */
     }
@@ -810,12 +827,12 @@ export function EditorToolbar({
         <HStack gap={1} flexShrink={0} align="center" h="38px">
           <TBarTip
             label={sectionHoverHighlight
-              ? "Section margin bars on (hover + outline selection) — click to hide"
-              : "Section margin bars off — click to show"
+              ? "Sections on (sidebar outline + margin bars) — click to hide all"
+              : "Sections off — click to show outline and margin bars"
             }
           >
             <IconButton
-              aria-label={sectionHoverHighlight ? "Turn off section highlights" : "Turn on section highlights"}
+              aria-label={sectionHoverHighlight ? "Turn off sections (outline + margins)" : "Turn on sections (outline + margins)"}
               size="xs"
               variant={sectionHoverHighlight ? "subtle" : "ghost"}
               colorPalette="purple"
